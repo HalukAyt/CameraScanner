@@ -14,6 +14,7 @@ import {
   ImageBackground,
   Modal,
   PanResponder,
+  Platform,
   SafeAreaView,
   ScrollView,
   StatusBar,
@@ -28,6 +29,32 @@ import DocumentScanner from "react-native-document-scanner-plugin";
 import ViewShot, { captureRef } from "react-native-view-shot";
 import { WebView } from "react-native-webview";
 
+// --- ADMOB MODÜLLERİ ---
+import mobileAds, {
+  AdEventType,
+  BannerAd,
+  BannerAdSize,
+  InterstitialAd,
+  TestIds,
+} from "react-native-google-mobile-ads";
+
+const bannerAdUnitId = __DEV__
+  ? TestIds.BANNER
+  : Platform.select({
+      ios: "ca-app-pub-7283360706215445/4245282864",
+      android: "ca-app-pub-7283360706215445/9970751836",
+    }) || "";
+const interstitialAdUnitId = __DEV__
+  ? TestIds.INTERSTITIAL
+  : Platform.select({
+      ios: "ca-app-pub-7283360706215445/3294329127",
+      android: "ca-app-pub-7283360706215445/6871446203",
+    }) || "";
+
+const interstitial = InterstitialAd.createForAdRequest(interstitialAdUnitId, {
+  requestNonPersonalizedAdsOnly: true,
+});
+
 interface SavedScan {
   id: string;
   title: string;
@@ -35,7 +62,6 @@ interface SavedScan {
   uri: string;
   pages?: string[];
 }
-
 interface PlacedSignature {
   id: string;
   uri: string;
@@ -109,41 +135,49 @@ export default function App() {
   const [currentScreen, setCurrentScreen] = useState<
     "dashboard" | "editor" | "files"
   >("dashboard");
-
   const [scannedImagesList, setScannedImagesList] = useState<string[]>([]);
   const [currentPage, setCurrentPage] = useState(0);
   const [documentName, setDocumentName] = useState("Yeni_Belge");
   const [editingDocumentId, setEditingDocumentId] = useState<string | null>(
     null,
   );
-
   const [isProcessingSignature, setIsProcessingSignature] = useState(false);
   const [isCapturing, setIsCapturing] = useState(false);
   const [rawSignatureBase64, setRawSignatureBase64] = useState<string | null>(
     null,
   );
-
   const [rawPdfBase64, setRawPdfBase64] = useState<string | null>(null);
   const [isLoadingPdf, setIsLoadingPdf] = useState(false);
-
   const [searchQuery, setSearchQuery] = useState("");
   const [viewMode, setViewMode] = useState<"list" | "grid">("list");
-
   const tempPdfPages = useRef<string[]>([]);
-
   const [savedScans, setSavedScans] = useState<SavedScan[]>([]);
   const [savedSignatures, setSavedSignatures] = useState<string[]>([]);
   const [isSignModalVisible, setSignModalVisible] = useState(false);
-
   const [placedSignatures, setPlacedSignatures] = useState<PlacedSignature[]>(
     [],
   );
   const [activeSignId, setActiveSignId] = useState<string | null>(null);
-
   const viewShotRef = useRef<ViewShot>(null);
+
+  const [isAdLoaded, setIsAdLoaded] = useState(false);
+  const actionCounter = useRef(0);
 
   useEffect(() => {
     loadData();
+    mobileAds().initialize();
+    const l1 = interstitial.addAdEventListener(AdEventType.LOADED, () =>
+      setIsAdLoaded(true),
+    );
+    const l2 = interstitial.addAdEventListener(AdEventType.CLOSED, () => {
+      setIsAdLoaded(false);
+      interstitial.load();
+    });
+    interstitial.load();
+    return () => {
+      l1();
+      l2();
+    };
   }, []);
 
   const loadData = async () => {
@@ -157,6 +191,13 @@ export default function App() {
     }
   };
 
+  const handleAdFrequency = () => {
+    actionCounter.current += 1;
+    if (actionCounter.current % 3 === 0 && isAdLoaded) {
+      setTimeout(() => interstitial.show(), 500);
+    }
+  };
+
   const resetEditorState = (defaultName?: string, id: string | null = null) => {
     setPlacedSignatures([]);
     setActiveSignId(null);
@@ -166,327 +207,11 @@ export default function App() {
     setEditingDocumentId(id);
   };
 
-  const importPdfFile = async () => {
-    try {
-      const result = await DocumentPicker.getDocumentAsync({
-        type: "application/pdf",
-      });
-      if (!result.canceled && result.assets && result.assets.length > 0) {
-        setIsLoadingPdf(true);
-        tempPdfPages.current = [];
-        const pdfUri = result.assets[0].uri;
-        const base64String = await FileSystem.readAsStringAsync(pdfUri, {
-          encoding: "base64",
-        });
-        let originalName = result.assets[0].name.replace(".pdf", "");
-        resetEditorState(originalName, null);
-        setRawPdfBase64(base64String);
-      }
-    } catch (error) {
-      setIsLoadingPdf(false);
-      console.error("PDF içe aktarma hatası:", error);
-      Alert.alert("Hata", "PDF dosyası okunamadı.");
-    }
-  };
-
-  const importFromGallery = async () => {
-    try {
-      const permissionResult =
-        await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (permissionResult.granted === false) {
-        Alert.alert(
-          "İzin Gerekli",
-          "Galerinizden belge seçebilmek için fotoğraf izni vermelisiniz.",
-        );
-        return;
-      }
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsMultipleSelection: true,
-        quality: 1,
-      });
-
-      if (!result.canceled && result.assets && result.assets.length > 0) {
-        const selectedUris = result.assets.map((asset) => asset.uri);
-        setScannedImagesList(selectedUris);
-        setCurrentPage(0);
-        resetEditorState(
-          `Galeri_Aktarim_${Date.now().toString().slice(-4)}`,
-          null,
-        );
-        setCurrentScreen("editor");
-      }
-    } catch (error) {
-      console.error("İçe aktarma hatası:", error);
-    }
-  };
-
-  const scanDocument = async () => {
-    try {
-      const { scannedImages, status } = await DocumentScanner.scanDocument({
-        croppedImageQuality: 100,
-      });
-      if (status === "success" && scannedImages && scannedImages.length > 0) {
-        setScannedImagesList(scannedImages);
-        setCurrentPage(0);
-        resetEditorState(undefined, null);
-        setCurrentScreen("editor");
-      }
-    } catch (error) {
-      console.error("Tarama hatası:", error);
-    }
-  };
-
-  const scanWetSignature = async () => {
-    try {
-      setIsProcessingSignature(true);
-      Alert.alert(
-        "Önemli İpucu!",
-        "Kamera açıldığında filtre ikonuna basıp 'Renkli (Color)' modunu seçmeyi unutmayın! Yoksa mavi kalem siyah çıkar.",
-      );
-
-      setTimeout(async () => {
-        const { scannedImages, status } = await DocumentScanner.scanDocument({
-          croppedImageQuality: 100,
-        });
-        if (status === "success" && scannedImages && scannedImages.length > 0) {
-          const base64String = await FileSystem.readAsStringAsync(
-            scannedImages[0],
-            { encoding: "base64" },
-          );
-          setRawSignatureBase64(`data:image/jpeg;base64,${base64String}`);
-        } else {
-          setIsProcessingSignature(false);
-        }
-      }, 500);
-    } catch (error) {
-      setIsProcessingSignature(false);
-      console.error("İmza tarama hatası:", error);
-    }
-  };
-
-  const changePage = (newIndex: number) => {
-    if (placedSignatures.length > 0) {
-      setIsCapturing(true);
-      setActiveSignId(null);
-      setTimeout(async () => {
-        try {
-          const bakedUri = await captureRef(viewShotRef, {
-            format: "jpg",
-            quality: 1.0,
-          });
-          const updatedList = [...scannedImagesList];
-          updatedList[currentPage] = bakedUri;
-
-          setScannedImagesList(updatedList);
-          setPlacedSignatures([]);
-          setCurrentPage(newIndex);
-          setIsCapturing(false);
-        } catch (e) {
-          setIsCapturing(false);
-          console.error("Sayfa geçişi hatası:", e);
-        }
-      }, 100);
-    } else {
-      setCurrentPage(newIndex);
-    }
-  };
-
-  const addSignatureToDocument = (uri: string) => {
-    const newSign: PlacedSignature = {
-      id: Date.now().toString(),
-      uri: uri,
-      pan: new Animated.ValueXY(),
-      scale: new Animated.Value(1),
-      rotate: new Animated.Value(0),
-      baseScale: 1,
-      baseRotate: 0,
-    };
-    setPlacedSignatures((prev) => [...prev, newSign]);
-    setActiveSignId(newSign.id);
-    setSignModalVisible(false);
-  };
-
-  const handleSignatureProcessed = async (base64DataUri: string) => {
-    setRawSignatureBase64(null);
-    setIsProcessingSignature(false);
-    try {
-      const fileUri = FileSystem.documentDirectory + `sign_${Date.now()}.png`;
-      await FileSystem.writeAsStringAsync(
-        fileUri,
-        base64DataUri.replace("data:image/png;base64,", ""),
-        { encoding: "base64" },
-      );
-      const newSigs = [fileUri, ...savedSignatures];
-      setSavedSignatures(newSigs);
-      await AsyncStorage.setItem("@itech_signatures", JSON.stringify(newSigs));
-      addSignatureToDocument(fileUri);
-    } catch (error) {
-      console.error("İmza kaydedilemedi", error);
-    }
-  };
-
-  const deleteSignatureFromStorage = (uriToDelete: string) => {
-    Alert.alert(
-      "İmzayı Sil",
-      "Bu imzayı kalıcı olarak silmek istiyor musunuz?",
-      [
-        { text: "İptal", style: "cancel" },
-        {
-          text: "Sil",
-          style: "destructive",
-          onPress: async () => {
-            const updated = savedSignatures.filter(
-              (uri) => uri !== uriToDelete,
-            );
-            setSavedSignatures(updated);
-            await AsyncStorage.setItem(
-              "@itech_signatures",
-              JSON.stringify(updated),
-            );
-            await FileSystem.deleteAsync(uriToDelete, { idempotent: true });
-          },
-        },
-      ],
-    );
-  };
-
-  const removeActiveSignatureFromDocument = () => {
-    if (activeSignId) {
-      setPlacedSignatures((prev) =>
-        prev.filter((sign) => sign.id !== activeSignId),
-      );
-      setActiveSignId(null);
-    }
-  };
-
-  const shareDocument = () => {
-    Alert.alert("Paylaş", "Belgeyi hangi formatta paylaşmak istiyorsunuz?", [
-      { text: "İptal", style: "cancel" },
-      { text: "📸 JPG (Sadece Bu Sayfa)", onPress: () => processShare("jpg") },
-      { text: "📄 PDF (Tüm Sayfalar)", onPress: () => processShare("pdf") },
-    ]);
-  };
-
-  const processShare = async (format: "jpg" | "pdf") => {
-    setIsCapturing(true);
-    setActiveSignId(null);
-    setTimeout(async () => {
-      try {
-        let finalPages = [...scannedImagesList];
-
-        if (placedSignatures.length > 0 && viewShotRef.current) {
-          const bakedUri = await captureRef(viewShotRef, {
-            format: "jpg",
-            quality: 1.0,
-          });
-          finalPages[currentPage] = bakedUri;
-        }
-
-        let tempShareUri = finalPages[currentPage];
-
-        if (format === "pdf") {
-          let htmlContent = `<html><head><style>@page { margin: 0; size: A4 portrait; } body { margin: 0; padding: 0; background-color: #ffffff; } img { width: 100vw; height: 100vh; object-fit: contain; page-break-after: always; display: block; }</style></head><body>`;
-          for (const uri of finalPages) {
-            const base64 = await FileSystem.readAsStringAsync(uri, {
-              encoding: "base64",
-            });
-            htmlContent += `<img src="data:image/jpeg;base64,${base64}" />`;
-          }
-          htmlContent += `</body></html>`;
-          const { uri: pdfUri } = await Print.printToFileAsync({
-            html: htmlContent,
-          });
-          tempShareUri = pdfUri;
-        }
-
-        const safeName = documentName.replace(
-          /[^a-zA-Z0-9_ğüşıöçĞÜŞİÖÇ]/g,
-          "_",
-        );
-        const customNamedUri =
-          FileSystem.cacheDirectory + `${safeName}.${format}`;
-        await FileSystem.copyAsync({ from: tempShareUri, to: customNamedUri });
-
-        setIsCapturing(false);
-        const isAvailable = await Sharing.isAvailableAsync();
-        if (isAvailable)
-          await Sharing.shareAsync(customNamedUri, {
-            UTI: format === "pdf" ? "com.adobe.pdf" : "public.jpeg",
-          });
-        else Alert.alert("Hata", "Paylaşım bu cihazda desteklenmiyor.");
-      } catch (error) {
-        setIsCapturing(false);
-        console.error("Paylaşım hatası:", error);
-      }
-    }, 100);
-  };
-
-  const saveDocumentAndClose = async () => {
-    setIsCapturing(true);
-    setActiveSignId(null);
-    setTimeout(async () => {
-      try {
-        let finalPages = [...scannedImagesList];
-
-        if (placedSignatures.length > 0 && viewShotRef.current) {
-          const bakedUri = await captureRef(viewShotRef, {
-            format: "jpg",
-            quality: 1.0,
-          });
-          finalPages[currentPage] = bakedUri;
-        }
-
-        const permanentUris = await Promise.all(
-          finalPages.map(async (uri, index) => {
-            const permUri =
-              FileSystem.documentDirectory + `iTech_${Date.now()}_${index}.jpg`;
-            await FileSystem.copyAsync({ from: uri, to: permUri });
-            return permUri;
-          }),
-        );
-
-        let updatedScans = [...savedScans];
-
-        if (editingDocumentId) {
-          const existingIndex = updatedScans.findIndex(
-            (s) => s.id === editingDocumentId,
-          );
-          if (existingIndex > -1) {
-            updatedScans[existingIndex] = {
-              ...updatedScans[existingIndex],
-              title: documentName,
-              date: `${new Date().toLocaleDateString("tr-TR", { day: "numeric", month: "short", year: "numeric" })} • ${permanentUris.length} Sayfa (Güncellendi)`,
-              uri: permanentUris[0],
-              pages: permanentUris,
-            };
-          }
-        } else {
-          const newScan: SavedScan = {
-            id: Date.now().toString(),
-            title: documentName,
-            date: `${new Date().toLocaleDateString("tr-TR", { day: "numeric", month: "short", year: "numeric" })} • ${permanentUris.length} Sayfa`,
-            uri: permanentUris[0],
-            pages: permanentUris,
-          };
-          updatedScans = [newScan, ...updatedScans];
-        }
-
-        await AsyncStorage.setItem(
-          "@itech_scans",
-          JSON.stringify(updatedScans),
-        );
-        setSavedScans(updatedScans);
-
-        setScannedImagesList([]);
-        resetEditorState();
-        setCurrentScreen("dashboard");
-        setIsCapturing(false);
-      } catch (error) {
-        setIsCapturing(false);
-        console.error("Kaydetme hatası:", error);
-      }
-    }, 100);
+  const openSavedScan = (scan: SavedScan) => {
+    setScannedImagesList(scan.pages || [scan.uri]);
+    setCurrentPage(0);
+    resetEditorState(scan.title, scan.id);
+    setCurrentScreen("editor");
   };
 
   const deleteScan = (id: string, uri: string) => {
@@ -496,10 +221,14 @@ export default function App() {
         text: "Sil",
         style: "destructive",
         onPress: async () => {
-          await FileSystem.deleteAsync(uri, { idempotent: true });
-          const updated = savedScans.filter((scan) => scan.id !== id);
-          setSavedScans(updated);
-          await AsyncStorage.setItem("@itech_scans", JSON.stringify(updated));
+          try {
+            await FileSystem.deleteAsync(uri, { idempotent: true });
+            const updated = savedScans.filter((scan) => scan.id !== id);
+            setSavedScans(updated);
+            await AsyncStorage.setItem("@itech_scans", JSON.stringify(updated));
+          } catch (e) {
+            console.error(e);
+          }
         },
       },
     ]);
@@ -518,13 +247,6 @@ export default function App() {
         },
       },
     ]);
-  };
-
-  const openSavedScan = (scan: SavedScan) => {
-    setScannedImagesList(scan.pages || [scan.uri]);
-    setCurrentPage(0);
-    resetEditorState(scan.title, scan.id);
-    setCurrentScreen("editor");
   };
 
   const updateActiveSignScale = (change: number) => {
@@ -551,8 +273,279 @@ export default function App() {
     }
   };
 
-  const handleComingSoon = (f: string) =>
-    Alert.alert("🚀 Yakında!", `"${f}" yakında eklenecek.`);
+  const importPdfFile = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: "application/pdf",
+      });
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        setIsLoadingPdf(true);
+        tempPdfPages.current = [];
+        const pdfUri = result.assets[0].uri;
+        const base64String = await FileSystem.readAsStringAsync(pdfUri, {
+          encoding: "base64",
+        });
+        resetEditorState(result.assets[0].name.replace(".pdf", ""), null);
+        setRawPdfBase64(base64String);
+      }
+    } catch (err) {
+      setIsLoadingPdf(false);
+      console.error(err);
+    }
+  };
+
+  const importFromGallery = async () => {
+    try {
+      const permissionResult =
+        await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permissionResult.granted) return;
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsMultipleSelection: true,
+        quality: 1,
+      });
+      if (!result.canceled && result.assets) {
+        setScannedImagesList(result.assets.map((a) => a.uri));
+        setCurrentPage(0);
+        resetEditorState(undefined, null);
+        setCurrentScreen("editor");
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const scanDocument = async () => {
+    try {
+      const { scannedImages, status } = await DocumentScanner.scanDocument({
+        croppedImageQuality: 100,
+      });
+      if (status === "success" && scannedImages) {
+        setScannedImagesList(scannedImages);
+        setCurrentPage(0);
+        resetEditorState(undefined, null);
+        setCurrentScreen("editor");
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const scanWetSignature = async () => {
+    try {
+      setIsProcessingSignature(true);
+      Alert.alert(
+        "İpucu",
+        "Kamera açıldığında filtre ikonuna basıp 'Renkli' seçin!",
+      );
+      setTimeout(async () => {
+        const { scannedImages, status } = await DocumentScanner.scanDocument({
+          croppedImageQuality: 100,
+        });
+        if (status === "success" && scannedImages) {
+          const base64 = await FileSystem.readAsStringAsync(scannedImages[0], {
+            encoding: "base64",
+          });
+          setRawSignatureBase64(`data:image/jpeg;base64,${base64}`);
+        } else {
+          setIsProcessingSignature(false);
+        }
+      }, 500);
+    } catch (e) {
+      setIsProcessingSignature(false);
+      console.error(e);
+    }
+  };
+
+  const changePage = (newIndex: number) => {
+    if (placedSignatures.length > 0) {
+      setIsCapturing(true);
+      setActiveSignId(null);
+      setTimeout(async () => {
+        try {
+          const bakedUri = await captureRef(viewShotRef, {
+            format: "jpg",
+            quality: 1.0,
+          });
+          const updatedList = [...scannedImagesList];
+          updatedList[currentPage] = bakedUri;
+          setScannedImagesList(updatedList);
+          setPlacedSignatures([]);
+          setCurrentPage(newIndex);
+          setIsCapturing(false);
+        } catch (e) {
+          setIsCapturing(false);
+          console.error(e);
+        }
+      }, 100);
+    } else {
+      setCurrentPage(newIndex);
+    }
+  };
+
+  const addSignatureToDocument = (uri: string) => {
+    const newSign = {
+      id: Date.now().toString(),
+      uri,
+      pan: new Animated.ValueXY(),
+      scale: new Animated.Value(1),
+      rotate: new Animated.Value(0),
+      baseScale: 1,
+      baseRotate: 0,
+    };
+    setPlacedSignatures((prev) => [...prev, newSign]);
+    setActiveSignId(newSign.id);
+    setSignModalVisible(false);
+  };
+
+  const handleSignatureProcessed = async (base64DataUri: string) => {
+    setRawSignatureBase64(null);
+    setIsProcessingSignature(false);
+    try {
+      const fileUri = FileSystem.documentDirectory + `sign_${Date.now()}.png`;
+      await FileSystem.writeAsStringAsync(
+        fileUri,
+        base64DataUri.replace("data:image/png;base64,", ""),
+        { encoding: "base64" },
+      );
+      const newSigs = [fileUri, ...savedSignatures];
+      setSavedSignatures(newSigs);
+      await AsyncStorage.setItem("@itech_signatures", JSON.stringify(newSigs));
+      addSignatureToDocument(fileUri);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const deleteSignatureFromStorage = (uriToDelete: string) => {
+    Alert.alert("İmzayı Sil", "Silinsin mi?", [
+      { text: "İptal" },
+      {
+        text: "Sil",
+        style: "destructive",
+        onPress: async () => {
+          const updated = savedSignatures.filter((uri) => uri !== uriToDelete);
+          setSavedSignatures(updated);
+          await AsyncStorage.setItem(
+            "@itech_signatures",
+            JSON.stringify(updated),
+          );
+          await FileSystem.deleteAsync(uriToDelete, { idempotent: true });
+        },
+      },
+    ]);
+  };
+
+  const removeActiveSignatureFromDocument = () => {
+    if (activeSignId) {
+      setPlacedSignatures((p) => p.filter((s) => s.id !== activeSignId));
+      setActiveSignId(null);
+    }
+  };
+
+  const shareDocument = () => {
+    Alert.alert("Paylaş", "Format seçin:", [
+      { text: "İptal" },
+      { text: "📸 JPG", onPress: () => processShare("jpg") },
+      { text: "📄 PDF", onPress: () => processShare("pdf") },
+    ]);
+  };
+
+  const processShare = async (format: "jpg" | "pdf") => {
+    setIsCapturing(true);
+    setActiveSignId(null);
+    setTimeout(async () => {
+      try {
+        let finalPages = [...scannedImagesList];
+        if (placedSignatures.length > 0 && viewShotRef.current) {
+          finalPages[currentPage] = await captureRef(viewShotRef, {
+            format: "jpg",
+            quality: 1.0,
+          });
+        }
+        let tempUri = finalPages[currentPage];
+        if (format === "pdf") {
+          let html = `<html><body style="margin:0; background:#fff;">`;
+          for (const uri of finalPages) {
+            const b64 = await FileSystem.readAsStringAsync(uri, {
+              encoding: "base64",
+            });
+            html += `<img src="data:image/jpeg;base64,${b64}" style="width:100vw;height:100vh;object-fit:contain;page-break-after:always;"/>`;
+          }
+          const { uri } = await Print.printToFileAsync({
+            html: html + `</body></html>`,
+          });
+          tempUri = uri;
+        }
+        const customUri =
+          FileSystem.cacheDirectory +
+          `${documentName.replace(/[^a-zA-Z0-9]/g, "_")}.${format}`;
+        await FileSystem.copyAsync({ from: tempUri, to: customUri });
+        setIsCapturing(false);
+        await Sharing.shareAsync(customUri);
+        handleAdFrequency();
+      } catch (e) {
+        setIsCapturing(false);
+        console.error(e);
+      }
+    }, 100);
+  };
+
+  const saveDocumentAndClose = async () => {
+    setIsCapturing(true);
+    setActiveSignId(null);
+    setTimeout(async () => {
+      try {
+        let finalPages = [...scannedImagesList];
+        if (placedSignatures.length > 0 && viewShotRef.current) {
+          finalPages[currentPage] = await captureRef(viewShotRef, {
+            format: "jpg",
+            quality: 1.0,
+          });
+        }
+        const permanentUris = await Promise.all(
+          finalPages.map(async (uri, index) => {
+            const permUri =
+              FileSystem.documentDirectory + `iTech_${Date.now()}_${index}.jpg`;
+            await FileSystem.copyAsync({ from: uri, to: permUri });
+            return permUri;
+          }),
+        );
+        let updated = [...savedScans];
+        if (editingDocumentId) {
+          const idx = updated.findIndex((s) => s.id === editingDocumentId);
+          if (idx > -1)
+            updated[idx] = {
+              ...updated[idx],
+              title: documentName,
+              uri: permanentUris[0],
+              pages: permanentUris,
+            };
+        } else {
+          updated = [
+            {
+              id: Date.now().toString(),
+              title: documentName,
+              date: new Date().toLocaleDateString("tr-TR"),
+              uri: permanentUris[0],
+              pages: permanentUris,
+            },
+            ...updated,
+          ];
+        }
+        await AsyncStorage.setItem("@itech_scans", JSON.stringify(updated));
+        setSavedScans(updated);
+        setScannedImagesList([]);
+        resetEditorState();
+        setCurrentScreen("dashboard");
+        setIsCapturing(false);
+        handleAdFrequency();
+      } catch (e) {
+        setIsCapturing(false);
+        console.error(e);
+      }
+    }, 100);
+  };
 
   const renderBottomNav = () => (
     <View style={styles.bottomNav}>
@@ -603,29 +596,22 @@ export default function App() {
       <View style={styles.header}>
         <View>
           <Text style={styles.appName}>
-            iTech<Text style={styles.appNameBold}>Scanner</Text>
+            ITECH<Text style={styles.appNameBold}>Scanner</Text>
           </Text>
           <Text style={styles.appSubtitle}>Belgelerinizi dijitalleştirin</Text>
         </View>
-        <TouchableOpacity
-          style={styles.profileBtn}
-          onPress={() => Alert.alert("🚀", "Profil yakında.")}
-        >
-          <Ionicons name="person-circle" size={36} color="#6366f1" />
-        </TouchableOpacity>
+        {/* <TouchableOpacity style={styles.profileBtn} onPress={() => Alert.alert("🚀", "Profil yakında.")}><Ionicons name="person-circle" size={36} color="#6366f1" /></TouchableOpacity> */}
       </View>
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: 100 }}
+        contentContainerStyle={{ paddingBottom: 160 }}
       >
         {isLoadingPdf && (
           <View style={styles.loadingOverlay}>
             <ActivityIndicator size="large" color="#6366f1" />
             <Text style={styles.loadingText}>PDF Çözümleniyor...</Text>
-            <Text style={styles.loadingSubText}>(Tüm sayfalar taranıyor)</Text>
           </View>
         )}
-
         <TouchableOpacity
           style={styles.heroCard}
           onPress={scanDocument}
@@ -649,7 +635,6 @@ export default function App() {
             opacity={0.5}
           />
         </TouchableOpacity>
-
         <View style={styles.sectionContainer}>
           <Text style={styles.sectionTitle}>Akıllı Araçlar</Text>
           <ScrollView
@@ -665,7 +650,6 @@ export default function App() {
               </View>
               <Text style={styles.chipLabel}>PDF İmzala</Text>
             </TouchableOpacity>
-
             <TouchableOpacity
               style={styles.toolChip}
               onPress={importFromGallery}
@@ -679,7 +663,6 @@ export default function App() {
             </TouchableOpacity>
           </ScrollView>
         </View>
-
         <View style={styles.sectionContainer}>
           <View style={styles.recentsHeader}>
             <Text style={styles.sectionTitle}>Son Taramalar</Text>
@@ -718,25 +701,7 @@ export default function App() {
                 </View>
                 <TouchableOpacity
                   style={styles.moreBtn}
-                  onPress={() => {
-                    Alert.alert("Belgeyi Sil", "Kalıcı olarak silinsin mi?", [
-                      { text: "İptal", style: "cancel" },
-                      {
-                        text: "Sil",
-                        style: "destructive",
-                        onPress: () => {
-                          const updated = savedScans.filter(
-                            (scan) => scan.id !== item.id,
-                          );
-                          setSavedScans(updated);
-                          AsyncStorage.setItem(
-                            "@itech_scans",
-                            JSON.stringify(updated),
-                          );
-                        },
-                      },
-                    ]);
-                  }}
+                  onPress={() => deleteScan(item.id, item.uri)}
                 >
                   <MaterialCommunityIcons
                     name="trash-can-outline"
@@ -749,20 +714,23 @@ export default function App() {
           )}
         </View>
       </ScrollView>
-
+      <View style={styles.adContainer}>
+        <BannerAd
+          unitId={bannerAdUnitId}
+          size={BannerAdSize.ANCHORED_ADAPTIVE_BANNER}
+          requestOptions={{ requestNonPersonalizedAdsOnly: true }}
+        />
+      </View>
       {renderBottomNav()}
     </View>
   );
 
   const renderFilesScreen = () => {
-    const filteredScans = savedScans.filter((scan) =>
-      scan.title.toLowerCase().includes(searchQuery.toLowerCase()),
+    const filtered = savedScans.filter((s) =>
+      s.title.toLowerCase().includes(searchQuery.toLowerCase()),
     );
-
     return (
       <View style={styles.dashboardContainer}>
-        <StatusBar barStyle="light-content" backgroundColor="#0f172a" />
-
         <View style={styles.filesHeader}>
           <Text style={styles.filesTitle}>Dosyalarım</Text>
           <TouchableOpacity
@@ -775,7 +743,6 @@ export default function App() {
             />
           </TouchableOpacity>
         </View>
-
         <View style={styles.searchContainer}>
           <Ionicons
             name="search"
@@ -796,41 +763,34 @@ export default function App() {
             </TouchableOpacity>
           )}
         </View>
-
         <ScrollView
           showsVerticalScrollIndicator={false}
-          contentContainerStyle={{ paddingBottom: 100 }}
+          contentContainerStyle={{ paddingBottom: 160 }}
         >
-          {filteredScans.length === 0 ? (
+          {filtered.length === 0 ? (
             <View style={styles.emptyScansContainer}>
               <Ionicons name="folder-open-outline" size={50} color="#334155" />
               <Text style={styles.emptyScansText}>Belge bulunamadı.</Text>
             </View>
           ) : (
             <View style={viewMode === "grid" ? styles.gridContainer : {}}>
-              {filteredScans.map((item) => {
-                if (viewMode === "grid") {
-                  return (
-                    <TouchableOpacity
-                      key={item.id}
-                      style={styles.gridCard}
-                      onPress={() => openSavedScan(item)}
-                    >
-                      <Image
-                        source={{ uri: item.uri }}
-                        style={styles.gridThumbnail}
-                      />
-                      <Text style={styles.gridTitle} numberOfLines={1}>
-                        {item.title}
-                      </Text>
-                      <Text style={styles.gridDate}>
-                        {item.date.split("•")[0].trim()}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                }
-
-                return (
+              {filtered.map((item) =>
+                viewMode === "grid" ? (
+                  <TouchableOpacity
+                    key={item.id}
+                    style={styles.gridCard}
+                    onPress={() => openSavedScan(item)}
+                  >
+                    <Image
+                      source={{ uri: item.uri }}
+                      style={styles.gridThumbnail}
+                    />
+                    <Text style={styles.gridTitle} numberOfLines={1}>
+                      {item.title}
+                    </Text>
+                    <Text style={styles.gridDate}>{item.date}</Text>
+                  </TouchableOpacity>
+                ) : (
                   <TouchableOpacity
                     key={item.id}
                     style={styles.recentCard}
@@ -862,12 +822,18 @@ export default function App() {
                       />
                     </TouchableOpacity>
                   </TouchableOpacity>
-                );
-              })}
+                ),
+              )}
             </View>
           )}
         </ScrollView>
-
+        <View style={styles.adContainer}>
+          <BannerAd
+            unitId={bannerAdUnitId}
+            size={BannerAdSize.ANCHORED_ADAPTIVE_BANNER}
+            requestOptions={{ requestNonPersonalizedAdsOnly: true }}
+          />
+        </View>
         {renderBottomNav()}
       </View>
     );
@@ -879,7 +845,6 @@ export default function App() {
         <TouchableOpacity onPress={closeEditor} style={styles.backButton}>
           <Ionicons name="chevron-back" size={28} color="#fff" />
         </TouchableOpacity>
-
         <View style={styles.titleEditContainer}>
           <TextInput
             style={styles.titleInput}
@@ -887,8 +852,6 @@ export default function App() {
             onChangeText={setDocumentName}
             selectTextOnFocus
             maxLength={30}
-            placeholder="Belge Adı"
-            placeholderTextColor="#64748b"
           />
           <Ionicons
             name="pencil"
@@ -897,7 +860,6 @@ export default function App() {
             style={{ marginLeft: 5 }}
           />
         </View>
-
         <TouchableOpacity
           onPress={saveDocumentAndClose}
           style={styles.saveHeaderButton}
@@ -905,7 +867,6 @@ export default function App() {
           <Text style={styles.saveHeaderText}>Bitti</Text>
         </TouchableOpacity>
       </View>
-
       {scannedImagesList.length > 1 && (
         <View style={styles.pageNavigator}>
           <TouchableOpacity
@@ -937,7 +898,6 @@ export default function App() {
           </TouchableOpacity>
         </View>
       )}
-
       <View style={styles.resultContainer}>
         <TouchableWithoutFeedback onPress={() => setActiveSignId(null)}>
           <View
@@ -971,7 +931,6 @@ export default function App() {
             </ViewShot>
           </View>
         </TouchableWithoutFeedback>
-
         {activeSignId && !isCapturing && (
           <View style={styles.signatureControlsPanel}>
             <TouchableOpacity
@@ -1008,7 +967,6 @@ export default function App() {
             </TouchableOpacity>
           </View>
         )}
-
         <View style={styles.editorToolbar}>
           <TouchableOpacity
             style={styles.toolbarBtnMain}
@@ -1026,7 +984,6 @@ export default function App() {
           </TouchableOpacity>
         </View>
       </View>
-
       <Modal
         visible={isSignModalVisible}
         transparent={true}
@@ -1064,9 +1021,7 @@ export default function App() {
                 ))}
               </ScrollView>
             ) : (
-              <Text style={styles.emptySignText}>
-                Henüz kayıtlı imzanız bulunmuyor.
-              </Text>
+              <Text style={styles.emptySignText}>Henüz imza yok.</Text>
             )}
             <TouchableOpacity
               style={styles.newSignBtn}
@@ -1095,92 +1050,42 @@ export default function App() {
 
   return (
     <SafeAreaView style={styles.container}>
-      {rawSignatureBase64 && (
-        <View style={styles.hiddenWebView}>
-          <WebView
-            originWhitelist={["*"]}
-            source={{
-              // YENİ: KESİN MÜREKKEP KORUMA MATEMATİĞİ
-              html: `<html><body style="margin:0;"><canvas id="c"></canvas><script>
+      <View style={{ height: 0, width: 0, position: "absolute", opacity: 0 }}>
+        <WebView
+          originWhitelist={["*"]}
+          onMessage={(e) => handleSignatureProcessed(e.nativeEvent.data)}
+          source={{
+            html: `<html><body style="margin:0;"><canvas id="c"></canvas><script>
                   var img = new Image(); img.onload = function() {
                     var canvas = document.getElementById('c'); var ctx = canvas.getContext('2d'); canvas.width = img.width; canvas.height = img.height; ctx.drawImage(img, 0, 0);
                     var imgData = ctx.getImageData(0, 0, canvas.width, canvas.height); var data = imgData.data;
-                    
                     for (var i = 0; i < data.length; i += 4) { 
-                      var r = data[i]; var g = data[i+1]; var b = data[i+2];
-                      
-                      // Eğer piksel çok aydınlıksa ve renkler birbirine çok yakınsa (Beyaz veya gri kağıt)
-                      if (r > 130 && g > 130 && b > 130) {
-                        data[i+3] = 0; // Şeffaf yap (Yok et)
-                      } else {
-                        // Kalan her şey MÜREKKEPTİR (Mavi, Kırmızı, Siyah)
-                        data[i+3] = 255; // %100 OPAK YAP (Asla silikleşmesin)
-                        
-                        // İsteğe bağlı: İmza daha can alıcı dursun diye renkleri biraz koyulaştırıyoruz
-                        data[i] = Math.max(0, r - 20);
-                        data[i+1] = Math.max(0, g - 20);
-                        data[i+2] = Math.max(0, b - 20);
-                      }
+                      var r = data[i], g = data[i+1], b = data[i+2];
+                      if (r > 130 && g > 130 && b > 130) { data[i+3] = 0; } 
+                      else { data[i+3] = 255; data[i] = Math.max(0, r - 20); data[i+1] = Math.max(0, g - 20); data[i+2] = Math.max(0, b - 20); }
                     }
                     ctx.putImageData(imgData, 0, 0); window.ReactNativeWebView.postMessage(canvas.toDataURL('image/png'));
                   }; img.src = '${rawSignatureBase64}';
                 </script></body></html>`,
-            }}
-            onMessage={(e) => handleSignatureProcessed(e.nativeEvent.data)}
-          />
-        </View>
-      )}
-
+          }}
+        />
+      </View>
       {rawPdfBase64 && (
         <View style={styles.hiddenWebView}>
           <WebView
             originWhitelist={["*"]}
-            source={{
-              html: `<html><head><script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script></head><body><canvas id="c"></canvas><script>
-                  var pdfjsLib = window['pdfjs-dist/build/pdf'];
-                  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
-                  var raw = atob('${rawPdfBase64}'); var uint8Array = new Uint8Array(raw.length);
-                  for (var i = 0; i < raw.length; i++) { uint8Array[i] = raw.charCodeAt(i); }
-                  
-                  var loadingTask = pdfjsLib.getDocument({data: uint8Array});
-                  loadingTask.promise.then(function(pdf) {
-                    var numPages = pdf.numPages;
-                    var processPage = function(pageNum) {
-                      pdf.getPage(pageNum).then(function(page) {
-                        var viewport = page.getViewport({scale: 1.5}); 
-                        var canvas = document.getElementById('c'); canvas.height = viewport.height; canvas.width = viewport.width;
-                        page.render({canvasContext: canvas.getContext('2d'), viewport: viewport}).promise.then(function() {
-                          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'pdf_page', pageIndex: pageNum - 1, totalPages: numPages, base64: canvas.toDataURL('image/jpeg', 0.8) }));
-                          if(pageNum < numPages) { processPage(pageNum + 1); }
-                        });
-                      });
-                    };
-                    processPage(1);
-                  }).catch(function(err) { window.ReactNativeWebView.postMessage('ERROR'); });
-                </script></body></html>`,
-            }}
             onMessage={async (e) => {
-              const data = e.nativeEvent.data;
-              if (data === "ERROR") {
-                setIsLoadingPdf(false);
-                setRawPdfBase64(null);
-                Alert.alert("Hata", "PDF okunamadı.");
-                return;
-              }
-              const parsed = JSON.parse(data);
-
+              const parsed = JSON.parse(e.nativeEvent.data);
               if (parsed.type === "pdf_page") {
                 const uri =
                   FileSystem.documentDirectory +
-                  `pdf_page_${Date.now()}_${parsed.pageIndex}.jpg`;
+                  `p_${Date.now()}_${parsed.pageIndex}.jpg`;
                 await FileSystem.writeAsStringAsync(
                   uri,
                   parsed.base64.split(",")[1],
                   { encoding: "base64" },
                 );
-
                 tempPdfPages.current[parsed.pageIndex] = uri;
-
                 if (
                   tempPdfPages.current.filter(Boolean).length ===
                   parsed.totalPages
@@ -1193,10 +1098,30 @@ export default function App() {
                 }
               }
             }}
+            source={{
+              html: `<html><head><script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script></head><body><canvas id="c"></canvas><script>
+                  var pdfjsLib = window['pdfjs-dist/build/pdf'];
+                  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+                  var raw = atob('${rawPdfBase64}'); var uint8Array = new Uint8Array(raw.length);
+                  for (var i = 0; i < raw.length; i++) { uint8Array[i] = raw.charCodeAt(i); }
+                  pdfjsLib.getDocument({data: uint8Array}).promise.then(function(pdf) {
+                    var n = pdf.numPages;
+                    var process = function(num) {
+                      pdf.getPage(num).then(function(page) {
+                        var v = page.getViewport({scale: 1.5}); var canvas = document.getElementById('c');
+                        canvas.height = v.height; canvas.width = v.width;
+                        page.render({canvasContext: canvas.getContext('2d'), viewport: v}).promise.then(function() {
+                          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'pdf_page', pageIndex: num - 1, totalPages: n, base64: canvas.toDataURL('image/jpeg', 0.8) }));
+                          if(num < n) process(num + 1);
+                        });
+                      });
+                    }; process(1);
+                  });
+                </script></body></html>`,
+            }}
           />
         </View>
       )}
-
       {currentScreen === "dashboard" && renderDashboard()}
       {currentScreen === "files" && renderFilesScreen()}
       {currentScreen === "editor" && renderEditor()}
@@ -1321,6 +1246,13 @@ const styles = StyleSheet.create({
   },
   recentDocDate: { color: "#64748b", fontSize: 12 },
   moreBtn: { padding: 10 },
+  adContainer: {
+    width: "100%",
+    alignItems: "center",
+    position: "absolute",
+    bottom: 75,
+    backgroundColor: "#0f172a",
+  },
   bottomNav: {
     position: "absolute",
     bottom: 0,

@@ -22,8 +22,6 @@
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "android.permission.CAMERA",
-        "android.permission.RECORD_AUDIO",
-        "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
       ],
       "package": "com.halukayt.CameraScanner"
@@ -51,6 +49,13 @@
         "expo-camera",
         {
           "cameraPermission": "CameraScanner uygulaması belgelerinizi taramak için kameranıza ihtiyaç duyar."
+        }
+      ],
+      [
+        "react-native-google-mobile-ads",
+        {
+          "androidAppId": "ca-app-pub-7283360706215445~8376099567",
+          "iosAppId": "ca-app-pub-7283360706215445~1388019381"
         }
       ]
     ],
