@@ -4,31 +4,42 @@
     "slug": "CameraScanner",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/ITECH.png",
     "scheme": "camerascanner",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.halukayt.CameraScanner",
+      "infoPlist": {
+        "CFBundleDevelopmentRegion": "tr",
+        "CFBundleLocalizations": ["tr"],
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSCameraUsageDescription": "CameraScanner, belgelerinizi taramak ve dijitalleştirmek için kameranıza erişim ister.",
+        "NSPhotoLibraryUsageDescription": "Galerinizdeki mevcut belgeleri seçip tarayabilmeniz için fotoğraf kütüphanenize erişim gerekiyor.",
+        "NSPhotoLibraryAddUsageDescription": "Taranan belgeleri galerinize kaydedebilmeniz için fotoğraf kütüphanesine yazma izni gerekiyor."
+      }
     },
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "foregroundImage": "./assets/images/ITECH.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
-        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+        "monochromeImage": "./assets/images/ITECH.png"
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "android.permission.CAMERA",
-        "android.permission.RECORD_AUDIO"
+        "android.permission.RECORD_AUDIO",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
       ],
       "package": "com.halukayt.CameraScanner"
     },
     "web": {
       "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/images/ITECH.png"
     },
     "plugins": [
       "expo-router",
@@ -62,6 +73,12 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "0f6e54d4-7205-40ef-9eaa-c11db19447f9"
+      }
     }
   }
 }

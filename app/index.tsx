@@ -827,13 +827,13 @@ export default function App() {
             </View>
           )}
         </ScrollView>
-        <View style={styles.adContainer}>
+        {/* <View style={styles.adContainer}>
           <BannerAd
             unitId={bannerAdUnitId}
             size={BannerAdSize.ANCHORED_ADAPTIVE_BANNER}
             requestOptions={{ requestNonPersonalizedAdsOnly: true }}
           />
-        </View>
+        </View> */}
         {renderBottomNav()}
       </View>
     );
