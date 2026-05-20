@@ -2,7 +2,7 @@
   "expo": {
     "name": "CameraScanner",
     "slug": "CameraScanner",
-    "version": "1.0.0",
+    "version": "1.2.0",
     "orientation": "portrait",
     "icon": "./assets/images/ITECH.png",
     "scheme": "camerascanner",
@@ -24,7 +24,7 @@
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/ITECH.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
+        "backgroundImage": "./assets/images/ITECH.png",
         "monochromeImage": "./assets/images/ITECH.png"
       },
       "edgeToEdgeEnabled": true,
@@ -46,7 +46,7 @@
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/splash-icon.png",
+          "image": "./assets/images/ITECH.png",
           "imageWidth": 200,
           "resizeMode": "contain",
           "backgroundColor": "#ffffff",

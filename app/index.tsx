@@ -5,13 +5,14 @@ import * as FileSystem from "expo-file-system/legacy";
 import * as ImagePicker from "expo-image-picker";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   Animated,
   Image,
   ImageBackground,
+  InteractionManager,
   Modal,
   PanResponder,
   Platform,
@@ -25,35 +26,10 @@ import {
   TouchableWithoutFeedback,
   View,
 } from "react-native";
-import DocumentScanner from "react-native-document-scanner-plugin";
 import ViewShot, { captureRef } from "react-native-view-shot";
 import { WebView } from "react-native-webview";
 
 // --- ADMOB MODÜLLERİ ---
-import mobileAds, {
-  AdEventType,
-  BannerAd,
-  BannerAdSize,
-  InterstitialAd,
-  TestIds,
-} from "react-native-google-mobile-ads";
-
-const bannerAdUnitId = __DEV__
-  ? TestIds.BANNER
-  : Platform.select({
-      ios: "ca-app-pub-7283360706215445/4245282864",
-      android: "ca-app-pub-7283360706215445/9970751836",
-    }) || "";
-const interstitialAdUnitId = __DEV__
-  ? TestIds.INTERSTITIAL
-  : Platform.select({
-      ios: "ca-app-pub-7283360706215445/3294329127",
-      android: "ca-app-pub-7283360706215445/6871446203",
-    }) || "";
-
-const interstitial = InterstitialAd.createForAdRequest(interstitialAdUnitId, {
-  requestNonPersonalizedAdsOnly: true,
-});
 
 interface SavedScan {
   id: string;
@@ -62,6 +38,37 @@ interface SavedScan {
   uri: string;
   pages?: string[];
 }
+
+type ImportKind = "pdf" | "docx" | "image";
+type ShareFormat = "jpg" | "pdf" | "word";
+
+interface ImportJob {
+  id: string;
+  kind: ImportKind;
+  append: boolean;
+  name: string;
+  uri?: string;
+  base64?: string;
+}
+
+interface EditorSnapshot {
+  pages: string[];
+  currentPage: number;
+  label: string;
+}
+
+const stripFileExtension = (name: string) => name.replace(/\.[^.]+$/, "");
+
+const pause = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+type DocumentScannerModule = {
+  scanDocument: (options: {
+    croppedImageQuality: number;
+  }) => Promise<{ scannedImages?: string[]; status?: string }>;
+};
+
+type GoogleMobileAdsModule = typeof import("react-native-google-mobile-ads");
 interface PlacedSignature {
   id: string;
   uri: string;
@@ -146,37 +153,82 @@ export default function App() {
   const [rawSignatureBase64, setRawSignatureBase64] = useState<string | null>(
     null,
   );
-  const [rawPdfBase64, setRawPdfBase64] = useState<string | null>(null);
-  const [isLoadingPdf, setIsLoadingPdf] = useState(false);
+  const [pendingImports, setPendingImports] = useState<ImportJob[]>([]);
+  const [activeImport, setActiveImport] = useState<ImportJob | null>(null);
+  const [isLoadingDocument, setIsLoadingDocument] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [viewMode, setViewMode] = useState<"list" | "grid">("list");
-  const tempPdfPages = useRef<string[]>([]);
+  const tempImportedPages = useRef<string[]>([]);
   const [savedScans, setSavedScans] = useState<SavedScan[]>([]);
   const [savedSignatures, setSavedSignatures] = useState<string[]>([]);
   const [isSignModalVisible, setSignModalVisible] = useState(false);
+  const [isShareModalVisible, setShareModalVisible] = useState(false);
+  const [isPageAddModalVisible, setPageAddModalVisible] = useState(false);
+  const [isPageAddBusy, setIsPageAddBusy] = useState(false);
+  const [undoStack, setUndoStack] = useState<EditorSnapshot[]>([]);
   const [placedSignatures, setPlacedSignatures] = useState<PlacedSignature[]>(
     [],
   );
   const [activeSignId, setActiveSignId] = useState<string | null>(null);
   const viewShotRef = useRef<ViewShot>(null);
 
+  const [adsModule, setAdsModule] = useState<GoogleMobileAdsModule | null>(
+    null,
+  );
   const [isAdLoaded, setIsAdLoaded] = useState(false);
+  const interstitialRef = useRef<any>(null);
+  const processingImportIdRef = useRef<string | null>(null);
   const actionCounter = useRef(0);
 
   useEffect(() => {
     loadData();
-    mobileAds().initialize();
-    const l1 = interstitial.addAdEventListener(AdEventType.LOADED, () =>
-      setIsAdLoaded(true),
-    );
-    const l2 = interstitial.addAdEventListener(AdEventType.CLOSED, () => {
-      setIsAdLoaded(false);
-      interstitial.load();
-    });
-    interstitial.load();
+    let isMounted = true;
+    let unsubscribeLoaded: (() => void) | undefined;
+    let unsubscribeClosed: (() => void) | undefined;
+
+    const initializeAds = async () => {
+      try {
+        const module = await import("react-native-google-mobile-ads");
+        await module.default().initialize();
+        if (!isMounted) return;
+
+        const interstitialAdUnitId = __DEV__
+          ? module.TestIds.INTERSTITIAL
+          : Platform.select({
+              ios: "ca-app-pub-7283360706215445/3294329127",
+              android: "ca-app-pub-7283360706215445/6871446203",
+            }) || "";
+        const interstitial = module.InterstitialAd.createForAdRequest(
+          interstitialAdUnitId,
+          {
+            requestNonPersonalizedAdsOnly: true,
+          },
+        );
+
+        interstitialRef.current = interstitial;
+        setAdsModule(module);
+        unsubscribeLoaded = interstitial.addAdEventListener(
+          module.AdEventType.LOADED,
+          () => setIsAdLoaded(true),
+        );
+        unsubscribeClosed = interstitial.addAdEventListener(
+          module.AdEventType.CLOSED,
+          () => {
+            setIsAdLoaded(false);
+            interstitial.load();
+          },
+        );
+        interstitial.load();
+      } catch (error) {
+        console.warn("Google Mobile Ads native module is unavailable.", error);
+      }
+    };
+
+    void initializeAds();
     return () => {
-      l1();
-      l2();
+      isMounted = false;
+      unsubscribeLoaded?.();
+      unsubscribeClosed?.();
     };
   }, []);
 
@@ -193,19 +245,51 @@ export default function App() {
 
   const handleAdFrequency = () => {
     actionCounter.current += 1;
-    if (actionCounter.current % 3 === 0 && isAdLoaded) {
-      setTimeout(() => interstitial.show(), 500);
+    if (actionCounter.current % 3 === 0 && isAdLoaded && interstitialRef.current) {
+      setTimeout(() => interstitialRef.current?.show(), 500);
     }
   };
 
-  const resetEditorState = (defaultName?: string, id: string | null = null) => {
+  const bannerAdUnitId = adsModule
+    ? __DEV__
+      ? adsModule.TestIds.BANNER
+      : Platform.select({
+          ios: "ca-app-pub-7283360706215445/4245282864",
+          android: "ca-app-pub-7283360706215445/9970751836",
+        }) || ""
+    : "";
+  const BannerAdComponent = adsModule?.BannerAd;
+  const bannerAdSize = adsModule?.BannerAdSize.ANCHORED_ADAPTIVE_BANNER;
+
+  const getDocumentScanner = async () => {
+    try {
+      const module = await import("react-native-document-scanner-plugin");
+      return module.default as DocumentScannerModule;
+    } catch (error) {
+      console.warn("DocumentScanner native module is unavailable.", error);
+      return null;
+    }
+  };
+
+  const showScannerUnavailableAlert = () => {
+    Alert.alert(
+      "Tarayıcı kullanılamıyor",
+      "Bu özellik için native modülü içeren development build gerekir. Şimdilik galeriden foto veya dosya ekleyebilirsin.",
+    );
+  };
+
+  const resetEditorState = useCallback(
+    (defaultName?: string, id: string | null = null) => {
     setPlacedSignatures([]);
     setActiveSignId(null);
+    setUndoStack([]);
     setDocumentName(
       defaultName || `iTech_Belge_${Date.now().toString().slice(-4)}`,
     );
     setEditingDocumentId(id);
-  };
+    },
+    [],
+  );
 
   const openSavedScan = (scan: SavedScan) => {
     setScannedImagesList(scan.pages || [scan.uri]);
@@ -214,7 +298,7 @@ export default function App() {
     setCurrentScreen("editor");
   };
 
-  const deleteScan = (id: string, uri: string) => {
+  const deleteScan = (scan: SavedScan) => {
     Alert.alert("Belgeyi Sil", "Bu işlemi geri alamazsınız.", [
       { text: "İptal", style: "cancel" },
       {
@@ -222,8 +306,13 @@ export default function App() {
         style: "destructive",
         onPress: async () => {
           try {
-            await FileSystem.deleteAsync(uri, { idempotent: true });
-            const updated = savedScans.filter((scan) => scan.id !== id);
+            const pagesToDelete = scan.pages?.length ? scan.pages : [scan.uri];
+            await Promise.all(
+              pagesToDelete.map((uri) =>
+                FileSystem.deleteAsync(uri, { idempotent: true }),
+              ),
+            );
+            const updated = savedScans.filter((item) => item.id !== scan.id);
             setSavedScans(updated);
             await AsyncStorage.setItem("@itech_scans", JSON.stringify(updated));
           } catch (e) {
@@ -273,28 +362,224 @@ export default function App() {
     }
   };
 
-  const importPdfFile = async () => {
+  const bakeCurrentPageIfNeeded = useCallback(async () => {
+    if (placedSignatures.length === 0 || !viewShotRef.current) {
+      return [...scannedImagesList];
+    }
+
+    setIsCapturing(true);
+    setActiveSignId(null);
+    await pause(100);
+
+    try {
+      const bakedUri = await captureRef(viewShotRef, {
+        format: "jpg",
+        quality: 1.0,
+      });
+      const updatedList = [...scannedImagesList];
+      updatedList[currentPage] = bakedUri;
+      setScannedImagesList(updatedList);
+      setPlacedSignatures([]);
+      return updatedList;
+    } finally {
+      setIsCapturing(false);
+    }
+  }, [currentPage, placedSignatures.length, scannedImagesList]);
+
+  const rememberUndoState = useCallback(
+    (pages: string[], pageIndex: number, label: string) => {
+      setUndoStack((history) => [
+        ...history.slice(-19),
+        {
+          pages: [...pages],
+          currentPage: pageIndex,
+          label,
+        },
+      ]);
+    },
+    [],
+  );
+
+  const undoLastEditorAction = async () => {
+    if (undoStack.length === 0) return;
+
+    try {
+      await bakeCurrentPageIfNeeded();
+      const previousState = undoStack[undoStack.length - 1];
+      setScannedImagesList(previousState.pages);
+      setCurrentPage(
+        Math.min(previousState.currentPage, previousState.pages.length - 1),
+      );
+      setPlacedSignatures([]);
+      setActiveSignId(null);
+      setUndoStack((history) => history.slice(0, -1));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const applyPagesToWorkspace = useCallback(
+    async (pages: string[], append: boolean, defaultName?: string) => {
+      if (append && scannedImagesList.length > 0) {
+        const committedPages = await bakeCurrentPageIfNeeded();
+        rememberUndoState(committedPages, currentPage, "Sayfalar eklendi.");
+        setScannedImagesList([...committedPages, ...pages]);
+        setCurrentPage(committedPages.length);
+        setCurrentScreen("editor");
+        return;
+      }
+
+      setScannedImagesList(pages);
+      setCurrentPage(0);
+      resetEditorState(defaultName, null);
+      setCurrentScreen("editor");
+    },
+    [
+      bakeCurrentPageIfNeeded,
+      currentPage,
+      rememberUndoState,
+      resetEditorState,
+      scannedImagesList.length,
+    ],
+  );
+
+  const completeImport = useCallback(async (job: ImportJob, pages: string[]) => {
+    try {
+      await applyPagesToWorkspace(
+        pages,
+        job.append,
+        job.append ? undefined : stripFileExtension(job.name),
+      );
+    } catch (error) {
+      console.error(error);
+      Alert.alert("İçe Aktarma Hatası", "Belge eklenirken bir sorun oluştu.");
+    } finally {
+      setActiveImport(null);
+      if (processingImportIdRef.current === job.id) {
+        processingImportIdRef.current = null;
+      }
+    }
+  }, [applyPagesToWorkspace]);
+
+  useEffect(() => {
+    if (!activeImport && pendingImports.length > 0) {
+      const [nextImport, ...remainingImports] = pendingImports;
+      tempImportedPages.current = [];
+      setPendingImports(remainingImports);
+      setActiveImport(nextImport);
+    } else if (!activeImport && pendingImports.length === 0) {
+      setIsLoadingDocument(false);
+    }
+  }, [activeImport, pendingImports]);
+
+  useEffect(() => {
+    if (activeImport?.kind === "image" && activeImport.uri) {
+      if (processingImportIdRef.current === activeImport.id) return;
+      processingImportIdRef.current = activeImport.id;
+      void completeImport(activeImport, [activeImport.uri]);
+    }
+  }, [activeImport, completeImport]);
+
+  const runPageAddAction = (action: () => Promise<void>) => {
+    if (isPageAddBusy) return;
+
+    setIsPageAddBusy(true);
+    setPageAddModalVisible(false);
+    InteractionManager.runAfterInteractions(() => {
+      setTimeout(async () => {
+        try {
+          await action();
+        } finally {
+          setIsPageAddBusy(false);
+        }
+      }, 250);
+    });
+  };
+
+  const openPageAddOptions = () => {
+    if (isPageAddBusy) return;
+
+    setPageAddModalVisible(true);
+  };
+
+  const queueDocumentImports = async (append: boolean) => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
-        type: "application/pdf",
+        type: [
+          "application/pdf",
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "image/*",
+        ],
+        multiple: true,
+        copyToCacheDirectory: true,
       });
       if (!result.canceled && result.assets && result.assets.length > 0) {
-        setIsLoadingPdf(true);
-        tempPdfPages.current = [];
-        const pdfUri = result.assets[0].uri;
-        const base64String = await FileSystem.readAsStringAsync(pdfUri, {
-          encoding: "base64",
-        });
-        resetEditorState(result.assets[0].name.replace(".pdf", ""), null);
-        setRawPdfBase64(base64String);
+        const jobs = await Promise.all(
+          result.assets.map(async (asset, index) => {
+            const lowerName = asset.name.toLowerCase();
+            const shouldAppend = append || index > 0;
+            const isImage = asset.mimeType?.startsWith("image/");
+            const isPdf =
+              asset.mimeType === "application/pdf" ||
+              lowerName.endsWith(".pdf");
+            const isDocx =
+              asset.mimeType ===
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+              lowerName.endsWith(".docx");
+
+            if (isImage) {
+              return {
+                id: `${Date.now()}_${index}`,
+                kind: "image" as const,
+                append: shouldAppend,
+                name: asset.name,
+                uri: asset.uri,
+              };
+            }
+
+            if (isPdf || isDocx) {
+              const base64 = await FileSystem.readAsStringAsync(asset.uri, {
+                encoding: "base64",
+              });
+              return {
+                id: `${Date.now()}_${index}`,
+                kind: isPdf ? ("pdf" as const) : ("docx" as const),
+                append: shouldAppend,
+                name: asset.name,
+                base64,
+              };
+            }
+
+            return null;
+          }),
+        );
+
+        const validJobs = jobs.filter(Boolean) as ImportJob[];
+        if (validJobs.length === 0) {
+          Alert.alert(
+            "Desteklenmeyen Dosya",
+            "Şimdilik PDF, DOCX ve görsel dosyaları ekleyebiliyorum.",
+          );
+          return;
+        }
+
+        if (validJobs.length !== jobs.length) {
+          Alert.alert(
+            "Bazı Dosyalar Atlandı",
+            "Şimdilik yalnızca PDF, DOCX ve görsel dosyaları içe aktarabiliyorum.",
+          );
+        }
+
+        setIsLoadingDocument(true);
+        setPendingImports((current) => [...current, ...validJobs]);
       }
     } catch (err) {
-      setIsLoadingPdf(false);
+      setIsLoadingDocument(false);
       console.error(err);
     }
   };
 
-  const importFromGallery = async () => {
+  const importFromGallery = async (append = false) => {
     try {
       const permissionResult =
         await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -305,26 +590,29 @@ export default function App() {
         quality: 1,
       });
       if (!result.canceled && result.assets) {
-        setScannedImagesList(result.assets.map((a) => a.uri));
-        setCurrentPage(0);
-        resetEditorState(undefined, null);
-        setCurrentScreen("editor");
+        await applyPagesToWorkspace(
+          result.assets.map((a) => a.uri),
+          append,
+        );
       }
     } catch (e) {
       console.error(e);
     }
   };
 
-  const scanDocument = async () => {
+  const scanDocument = async (append = false) => {
     try {
-      const { scannedImages, status } = await DocumentScanner.scanDocument({
+      const scanner = await getDocumentScanner();
+      if (!scanner) {
+        showScannerUnavailableAlert();
+        return;
+      }
+
+      const { scannedImages, status } = await scanner.scanDocument({
         croppedImageQuality: 100,
       });
       if (status === "success" && scannedImages) {
-        setScannedImagesList(scannedImages);
-        setCurrentPage(0);
-        resetEditorState(undefined, null);
-        setCurrentScreen("editor");
+        await applyPagesToWorkspace(scannedImages, append);
       }
     } catch (e) {
       console.error(e);
@@ -333,13 +621,19 @@ export default function App() {
 
   const scanWetSignature = async () => {
     try {
+      const scanner = await getDocumentScanner();
+      if (!scanner) {
+        showScannerUnavailableAlert();
+        return;
+      }
+
       setIsProcessingSignature(true);
       Alert.alert(
         "İpucu",
         "Kamera açıldığında filtre ikonuna basıp 'Renkli' seçin!",
       );
       setTimeout(async () => {
-        const { scannedImages, status } = await DocumentScanner.scanDocument({
+        const { scannedImages, status } = await scanner.scanDocument({
           croppedImageQuality: 100,
         });
         if (status === "success" && scannedImages) {
@@ -357,30 +651,61 @@ export default function App() {
     }
   };
 
-  const changePage = (newIndex: number) => {
-    if (placedSignatures.length > 0) {
-      setIsCapturing(true);
-      setActiveSignId(null);
-      setTimeout(async () => {
-        try {
-          const bakedUri = await captureRef(viewShotRef, {
-            format: "jpg",
-            quality: 1.0,
-          });
-          const updatedList = [...scannedImagesList];
-          updatedList[currentPage] = bakedUri;
-          setScannedImagesList(updatedList);
-          setPlacedSignatures([]);
-          setCurrentPage(newIndex);
-          setIsCapturing(false);
-        } catch (e) {
-          setIsCapturing(false);
-          console.error(e);
-        }
-      }, 100);
-    } else {
+  const changePage = async (newIndex: number) => {
+    if (newIndex < 0 || newIndex >= scannedImagesList.length) return;
+    try {
+      await bakeCurrentPageIfNeeded();
       setCurrentPage(newIndex);
+    } catch (e) {
+      console.error(e);
     }
+  };
+
+  const moveCurrentPage = async (direction: -1 | 1) => {
+    const targetIndex = currentPage + direction;
+    if (targetIndex < 0 || targetIndex >= scannedImagesList.length) return;
+
+    try {
+      const committedPages = await bakeCurrentPageIfNeeded();
+      rememberUndoState(committedPages, currentPage, "Sayfa taşındı.");
+      const updatedPages = [...committedPages];
+      [updatedPages[currentPage], updatedPages[targetIndex]] = [
+        updatedPages[targetIndex],
+        updatedPages[currentPage],
+      ];
+      setScannedImagesList(updatedPages);
+      setCurrentPage(targetIndex);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const deleteCurrentPage = async () => {
+    if (scannedImagesList.length <= 1) {
+      Alert.alert("Son Sayfa", "Belgede en az bir sayfa kalmalı.");
+      return;
+    }
+
+    Alert.alert("Sayfayı Sil", "Bu sayfayı silmek istiyor musun?", [
+      { text: "İptal", style: "cancel" },
+      {
+        text: "Sil",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            const committedPages = await bakeCurrentPageIfNeeded();
+            rememberUndoState(committedPages, currentPage, "Sayfa silindi.");
+            const updatedPages = committedPages.filter(
+              (_, index) => index !== currentPage,
+            );
+            setScannedImagesList(updatedPages);
+            setCurrentPage(Math.min(currentPage, updatedPages.length - 1));
+          } catch (e) {
+            console.error(e);
+          }
+        },
+      },
+    ]);
   };
 
   const addSignatureToDocument = (uri: string) => {
@@ -444,43 +769,57 @@ export default function App() {
   };
 
   const shareDocument = () => {
-    Alert.alert("Paylaş", "Format seçin:", [
-      { text: "İptal" },
-      { text: "📸 JPG", onPress: () => processShare("jpg") },
-      { text: "📄 PDF", onPress: () => processShare("pdf") },
-    ]);
+    if (isCapturing) return;
+    setShareModalVisible(true);
   };
 
-  const processShare = async (format: "jpg" | "pdf") => {
+  const runShareAction = (format: ShareFormat) => {
+    setShareModalVisible(false);
+    InteractionManager.runAfterInteractions(() => {
+      setTimeout(() => {
+        void processShare(format);
+      }, 200);
+    });
+  };
+
+  const buildPagesHtml = async (pages: string[]) => {
+    let html = `<html><body style="margin:0; background:#fff;">`;
+    for (const uri of pages) {
+      const b64 = await FileSystem.readAsStringAsync(uri, {
+        encoding: "base64",
+      });
+      html += `<img src="data:image/jpeg;base64,${b64}" style="width:100vw;height:100vh;object-fit:contain;page-break-after:always;"/>`;
+    }
+    return html + `</body></html>`;
+  };
+
+  const processShare = async (format: ShareFormat) => {
     setIsCapturing(true);
     setActiveSignId(null);
     setTimeout(async () => {
       try {
-        let finalPages = [...scannedImagesList];
-        if (placedSignatures.length > 0 && viewShotRef.current) {
-          finalPages[currentPage] = await captureRef(viewShotRef, {
-            format: "jpg",
-            quality: 1.0,
-          });
-        }
+        const finalPages = await bakeCurrentPageIfNeeded();
         let tempUri = finalPages[currentPage];
+        const safeName = documentName.replace(/[^a-zA-Z0-9]/g, "_");
+        const extension = format === "word" ? "doc" : format;
+
         if (format === "pdf") {
-          let html = `<html><body style="margin:0; background:#fff;">`;
-          for (const uri of finalPages) {
-            const b64 = await FileSystem.readAsStringAsync(uri, {
-              encoding: "base64",
-            });
-            html += `<img src="data:image/jpeg;base64,${b64}" style="width:100vw;height:100vh;object-fit:contain;page-break-after:always;"/>`;
-          }
+          const html = await buildPagesHtml(finalPages);
           const { uri } = await Print.printToFileAsync({
-            html: html + `</body></html>`,
+            html,
           });
           tempUri = uri;
+        } else if (format === "word") {
+          const html = await buildPagesHtml(finalPages);
+          tempUri = FileSystem.cacheDirectory + `${safeName}.doc`;
+          await FileSystem.writeAsStringAsync(tempUri, html, {
+            encoding: "utf8",
+          });
         }
-        const customUri =
-          FileSystem.cacheDirectory +
-          `${documentName.replace(/[^a-zA-Z0-9]/g, "_")}.${format}`;
-        await FileSystem.copyAsync({ from: tempUri, to: customUri });
+        const customUri = FileSystem.cacheDirectory + `${safeName}.${extension}`;
+        if (tempUri !== customUri) {
+          await FileSystem.copyAsync({ from: tempUri, to: customUri });
+        }
         setIsCapturing(false);
         await Sharing.shareAsync(customUri);
         handleAdFrequency();
@@ -496,13 +835,7 @@ export default function App() {
     setActiveSignId(null);
     setTimeout(async () => {
       try {
-        let finalPages = [...scannedImagesList];
-        if (placedSignatures.length > 0 && viewShotRef.current) {
-          finalPages[currentPage] = await captureRef(viewShotRef, {
-            format: "jpg",
-            quality: 1.0,
-          });
-        }
+        const finalPages = await bakeCurrentPageIfNeeded();
         const permanentUris = await Promise.all(
           finalPages.map(async (uri, index) => {
             const permUri =
@@ -596,7 +929,7 @@ export default function App() {
       <View style={styles.header}>
         <View>
           <Text style={styles.appName}>
-            ITECH<Text style={styles.appNameBold}>Scanner</Text>
+            Cam<Text style={styles.appNameBold}>Scanner</Text>
           </Text>
           <Text style={styles.appSubtitle}>Belgelerinizi dijitalleştirin</Text>
         </View>
@@ -606,15 +939,9 @@ export default function App() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: 160 }}
       >
-        {isLoadingPdf && (
-          <View style={styles.loadingOverlay}>
-            <ActivityIndicator size="large" color="#6366f1" />
-            <Text style={styles.loadingText}>PDF Çözümleniyor...</Text>
-          </View>
-        )}
         <TouchableOpacity
           style={styles.heroCard}
-          onPress={scanDocument}
+          onPress={() => scanDocument(false)}
           activeOpacity={0.8}
         >
           <View style={styles.heroContent}>
@@ -642,17 +969,20 @@ export default function App() {
             showsHorizontalScrollIndicator={false}
             style={styles.toolsScroll}
           >
-            <TouchableOpacity style={styles.toolChip} onPress={importPdfFile}>
+            <TouchableOpacity
+              style={styles.toolChip}
+              onPress={() => queueDocumentImports(false)}
+            >
               <View
                 style={[styles.chipIconBox, { backgroundColor: "#ef444420" }]}
               >
                 <Ionicons name="document-text" size={22} color="#ef4444" />
               </View>
-              <Text style={styles.chipLabel}>PDF İmzala</Text>
+              <Text style={styles.chipLabel}>Belge Yükle</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.toolChip}
-              onPress={importFromGallery}
+              onPress={() => importFromGallery(false)}
             >
               <View
                 style={[styles.chipIconBox, { backgroundColor: "#10b98120" }]}
@@ -701,7 +1031,7 @@ export default function App() {
                 </View>
                 <TouchableOpacity
                   style={styles.moreBtn}
-                  onPress={() => deleteScan(item.id, item.uri)}
+                  onPress={() => deleteScan(item)}
                 >
                   <MaterialCommunityIcons
                     name="trash-can-outline"
@@ -714,13 +1044,15 @@ export default function App() {
           )}
         </View>
       </ScrollView>
-      <View style={styles.adContainer}>
-        <BannerAd
-          unitId={bannerAdUnitId}
-          size={BannerAdSize.ANCHORED_ADAPTIVE_BANNER}
-          requestOptions={{ requestNonPersonalizedAdsOnly: true }}
-        />
-      </View>
+      {BannerAdComponent && bannerAdSize && bannerAdUnitId ? (
+        <View style={styles.adContainer}>
+          <BannerAdComponent
+            unitId={bannerAdUnitId}
+            size={bannerAdSize}
+            requestOptions={{ requestNonPersonalizedAdsOnly: true }}
+          />
+        </View>
+      ) : null}
       {renderBottomNav()}
     </View>
   );
@@ -813,7 +1145,7 @@ export default function App() {
                     </View>
                     <TouchableOpacity
                       style={styles.moreBtn}
-                      onPress={() => deleteScan(item.id, item.uri)}
+                      onPress={() => deleteScan(item)}
                     >
                       <MaterialCommunityIcons
                         name="trash-can-outline"
@@ -897,6 +1229,81 @@ export default function App() {
             />
           </TouchableOpacity>
         </View>
+      )}
+      <View style={styles.pageToolsContainer}>
+        <TouchableOpacity
+          style={[
+            styles.pageToolButton,
+            isPageAddBusy && styles.pageToolButtonDisabled,
+          ]}
+          disabled={isPageAddBusy}
+          onPress={openPageAddOptions}
+        >
+          <Ionicons name="add-circle-outline" size={20} color="#fff" />
+          <Text style={styles.pageToolText}>Sayfa Ekle</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[
+            styles.pageToolButton,
+            currentPage === 0 && styles.pageToolButtonDisabled,
+          ]}
+          onPress={() => moveCurrentPage(-1)}
+          disabled={currentPage === 0}
+        >
+          <Ionicons name="arrow-back-outline" size={18} color="#fff" />
+          <Text style={styles.pageToolText}>Sola Taşı</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[
+            styles.pageToolButton,
+            currentPage === scannedImagesList.length - 1 &&
+              styles.pageToolButtonDisabled,
+          ]}
+          onPress={() => moveCurrentPage(1)}
+          disabled={currentPage === scannedImagesList.length - 1}
+        >
+          <Ionicons name="arrow-forward-outline" size={18} color="#fff" />
+          <Text style={styles.pageToolText}>Sağa Taşı</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.pageToolButton, styles.pageToolDeleteButton]}
+          onPress={deleteCurrentPage}
+        >
+          <Ionicons name="trash-outline" size={18} color="#fff" />
+          <Text style={styles.pageToolText}>Sil</Text>
+        </TouchableOpacity>
+      </View>
+      {undoStack.length > 0 && (
+        <View style={styles.undoBar}>
+          <Text style={styles.undoText}>
+            {undoStack[undoStack.length - 1].label}
+          </Text>
+          <TouchableOpacity onPress={undoLastEditorAction}>
+            <Text style={styles.undoAction}>Geri Al</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+      {scannedImagesList.length > 1 && (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.pageThumbsScroll}
+          contentContainerStyle={styles.pageThumbsContent}
+        >
+          {scannedImagesList.map((uri, index) => (
+            <TouchableOpacity
+              key={`${uri}_${index}`}
+              style={[
+                styles.pageThumbCard,
+                currentPage === index && styles.pageThumbCardActive,
+              ]}
+              onPress={() => changePage(index)}
+            >
+              <Image source={{ uri }} style={styles.pageThumbImage} />
+              <Text style={styles.pageThumbLabel}>{index + 1}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
       )}
       <View style={styles.resultContainer}>
         <TouchableWithoutFeedback onPress={() => setActiveSignId(null)}>
@@ -1045,6 +1452,118 @@ export default function App() {
           </View>
         </View>
       </Modal>
+      <Modal
+        visible={isShareModalVisible}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => {
+          if (!isCapturing) setShareModalVisible(false);
+        }}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Paylaş</Text>
+              <TouchableOpacity
+                disabled={isCapturing}
+                onPress={() => setShareModalVisible(false)}
+              >
+                <Ionicons name="close-circle" size={28} color="#475569" />
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity
+              style={[
+                styles.pageAddAction,
+                isCapturing && styles.pageAddActionDisabled,
+              ]}
+              disabled={isCapturing}
+              onPress={() => runShareAction("jpg")}
+            >
+              <Ionicons name="image-outline" size={22} color="#fff" />
+              <Text style={styles.pageAddActionText}>JPG olarak paylaş</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.pageAddAction,
+                isCapturing && styles.pageAddActionDisabled,
+              ]}
+              disabled={isCapturing}
+              onPress={() => runShareAction("pdf")}
+            >
+              <Ionicons name="document-text-outline" size={22} color="#fff" />
+              <Text style={styles.pageAddActionText}>PDF olarak paylaş</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.pageAddAction,
+                isCapturing && styles.pageAddActionDisabled,
+              ]}
+              disabled={isCapturing}
+              onPress={() => runShareAction("word")}
+            >
+              <Ionicons name="document-outline" size={22} color="#fff" />
+              <Text style={styles.pageAddActionText}>Word olarak paylaş</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+        <Modal
+          visible={isPageAddModalVisible}
+          transparent={true}
+          animationType="slide"
+          onRequestClose={() => {
+            if (!isPageAddBusy) setPageAddModalVisible(false);
+          }}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalContent}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Sayfa Ekle / Birleştir</Text>
+              <TouchableOpacity
+                disabled={isPageAddBusy}
+                onPress={() => setPageAddModalVisible(false)}
+              >
+                <Ionicons name="close-circle" size={28} color="#475569" />
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity
+              style={[
+                styles.pageAddAction,
+                isPageAddBusy && styles.pageAddActionDisabled,
+              ]}
+              disabled={isPageAddBusy}
+              onPress={() => runPageAddAction(() => scanDocument(true))}
+            >
+              <Ionicons name="scan-outline" size={22} color="#fff" />
+              <Text style={styles.pageAddActionText}>Kamerayla ekle</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.pageAddAction,
+                isPageAddBusy && styles.pageAddActionDisabled,
+              ]}
+              disabled={isPageAddBusy}
+              onPress={() => runPageAddAction(() => importFromGallery(true))}
+            >
+              <Ionicons name="images-outline" size={22} color="#fff" />
+              <Text style={styles.pageAddActionText}>Galeriden foto ekle</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.pageAddAction,
+                isPageAddBusy && styles.pageAddActionDisabled,
+              ]}
+              disabled={isPageAddBusy}
+              onPress={() => runPageAddAction(() => queueDocumentImports(true))}
+            >
+              <Ionicons name="documents-outline" size={22} color="#fff" />
+              <Text style={styles.pageAddActionText}>
+                PDF / Word / foto birleştir
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 
@@ -1070,7 +1589,7 @@ export default function App() {
           }}
         />
       </View>
-      {rawPdfBase64 && (
+      {activeImport?.kind === "pdf" && activeImport.base64 && (
         <View style={styles.hiddenWebView}>
           <WebView
             originWhitelist={["*"]}
@@ -1078,31 +1597,35 @@ export default function App() {
               const parsed = JSON.parse(e.nativeEvent.data);
               if (parsed.type === "pdf_page") {
                 const uri =
-                  FileSystem.documentDirectory +
-                  `p_${Date.now()}_${parsed.pageIndex}.jpg`;
+                  FileSystem.cacheDirectory +
+                  `pdf_${activeImport.id}_${parsed.pageIndex}.jpg`;
                 await FileSystem.writeAsStringAsync(
                   uri,
                   parsed.base64.split(",")[1],
                   { encoding: "base64" },
                 );
-                tempPdfPages.current[parsed.pageIndex] = uri;
+                tempImportedPages.current[parsed.pageIndex] = uri;
                 if (
-                  tempPdfPages.current.filter(Boolean).length ===
+                  tempImportedPages.current.filter(Boolean).length ===
                   parsed.totalPages
                 ) {
-                  setScannedImagesList([...tempPdfPages.current]);
-                  setCurrentPage(0);
-                  setCurrentScreen("editor");
-                  setIsLoadingPdf(false);
-                  setRawPdfBase64(null);
+                  await completeImport(activeImport, [
+                    ...tempImportedPages.current,
+                  ]);
                 }
+              } else if (parsed.type === "import_error") {
+                Alert.alert(
+                  "PDF Hatası",
+                  parsed.message || "PDF çözümlenemedi.",
+                );
+                setActiveImport(null);
               }
             }}
             source={{
               html: `<html><head><script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script></head><body><canvas id="c"></canvas><script>
                   var pdfjsLib = window['pdfjs-dist/build/pdf'];
                   pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
-                  var raw = atob('${rawPdfBase64}'); var uint8Array = new Uint8Array(raw.length);
+                  var raw = atob('${activeImport.base64}'); var uint8Array = new Uint8Array(raw.length);
                   for (var i = 0; i < raw.length; i++) { uint8Array[i] = raw.charCodeAt(i); }
                   pdfjsLib.getDocument({data: uint8Array}).promise.then(function(pdf) {
                     var n = pdf.numPages;
@@ -1116,10 +1639,143 @@ export default function App() {
                         });
                       });
                     }; process(1);
+                  }).catch(function(error) {
+                    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'import_error', message: String(error) }));
                   });
                 </script></body></html>`,
             }}
           />
+        </View>
+      )}
+      {activeImport?.kind === "docx" && activeImport.base64 && (
+        <View style={styles.hiddenWebView}>
+          <WebView
+            originWhitelist={["*"]}
+            onMessage={async (e) => {
+              const parsed = JSON.parse(e.nativeEvent.data);
+              if (parsed.type === "docx_page") {
+                const uri =
+                  FileSystem.cacheDirectory +
+                  `docx_${activeImport.id}_${parsed.pageIndex}.jpg`;
+                await FileSystem.writeAsStringAsync(
+                  uri,
+                  parsed.base64.split(",")[1],
+                  { encoding: "base64" },
+                );
+                tempImportedPages.current[parsed.pageIndex] = uri;
+                if (
+                  tempImportedPages.current.filter(Boolean).length ===
+                  parsed.totalPages
+                ) {
+                  await completeImport(activeImport, [
+                    ...tempImportedPages.current,
+                  ]);
+                }
+              } else if (parsed.type === "import_error") {
+                Alert.alert(
+                  "Word Hatası",
+                  parsed.message || "Word belgesi çözümlenemedi.",
+                );
+                setActiveImport(null);
+              }
+            }}
+            source={{
+              html: `<html><head>
+                  <script src="https://unpkg.com/jszip/dist/jszip.min.js"></script>
+                  <script src="https://cdn.jsdelivr.net/npm/docx-preview@0.3.6/dist/docx-preview.min.js"></script>
+                  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+                  <style>
+                    body { margin: 0; background: #fff; }
+                    #container { background: #fff; }
+                    section.docx { margin: 0 auto 12px !important; box-shadow: none !important; }
+                  </style>
+                </head><body><div id="container"></div><script>
+                  function base64ToBytes(base64) {
+                    var raw = atob(base64);
+                    var bytes = new Uint8Array(raw.length);
+                    for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+                    return bytes;
+                  }
+                  var bytes = base64ToBytes('${activeImport.base64}');
+                  function emitPage(canvas, pageIndex, totalPages) {
+                    window.ReactNativeWebView.postMessage(JSON.stringify({
+                      type: 'docx_page',
+                      pageIndex: pageIndex,
+                      totalPages: totalPages,
+                      base64: canvas.toDataURL('image/jpeg', 0.9)
+                    }));
+                  }
+                  function splitTallCanvas(canvas, targetPageHeight) {
+                    var slices = [];
+                    var totalSlices = Math.max(1, Math.ceil(canvas.height / targetPageHeight));
+                    for (var i = 0; i < totalSlices; i++) {
+                      var sliceCanvas = document.createElement('canvas');
+                      sliceCanvas.width = canvas.width;
+                      sliceCanvas.height = targetPageHeight;
+                      var ctx = sliceCanvas.getContext('2d');
+                      ctx.fillStyle = '#fff';
+                      ctx.fillRect(0, 0, sliceCanvas.width, sliceCanvas.height);
+                      ctx.drawImage(
+                        canvas,
+                        0,
+                        i * targetPageHeight,
+                        canvas.width,
+                        Math.min(targetPageHeight, canvas.height - i * targetPageHeight),
+                        0,
+                        0,
+                        canvas.width,
+                        Math.min(targetPageHeight, canvas.height - i * targetPageHeight)
+                      );
+                      slices.push(sliceCanvas);
+                    }
+                    return slices;
+                  }
+                  docx.renderAsync(bytes, document.getElementById('container'), null, {
+                    useBase64URL: true,
+                    breakPages: true,
+                    ignoreLastRenderedPageBreak: false
+                  }).then(async function() {
+                    var renderedSections = Array.prototype.slice.call(document.querySelectorAll('section.docx'));
+                    var pages = renderedSections.length ? renderedSections : [document.getElementById('container')];
+
+                    if (pages.length > 1) {
+                      for (var i = 0; i < pages.length; i++) {
+                        var pageCanvas = await html2canvas(pages[i], {
+                          backgroundColor: '#fff',
+                          scale: 1.5,
+                          useCORS: true
+                        });
+                        emitPage(pageCanvas, i, pages.length);
+                      }
+                      return;
+                    }
+
+                    var sourcePage = pages[0];
+                    var fullCanvas = await html2canvas(sourcePage, {
+                      backgroundColor: '#fff',
+                      scale: 1.5,
+                      useCORS: true
+                    });
+                    var targetPageHeight = Math.round(fullCanvas.width * 1.4142);
+                    var pageCanvases =
+                      fullCanvas.height > targetPageHeight * 1.1
+                        ? splitTallCanvas(fullCanvas, targetPageHeight)
+                        : [fullCanvas];
+                    for (var j = 0; j < pageCanvases.length; j++) {
+                      emitPage(pageCanvases[j], j, pageCanvases.length);
+                    }
+                  }).catch(function(error) {
+                    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'import_error', message: String(error) }));
+                  });
+                </script></body></html>`,
+            }}
+          />
+        </View>
+      )}
+      {isLoadingDocument && (
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="large" color="#6366f1" />
+          <Text style={styles.loadingText}>Belge çözülüyor...</Text>
         </View>
       )}
       {currentScreen === "dashboard" && renderDashboard()}
@@ -1361,6 +2017,90 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     marginHorizontal: 20,
   },
+  pageToolsContainer: {
+    flexDirection: "row",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 8,
+    backgroundColor: "#0f172a",
+  },
+  pageToolButton: {
+    flex: 1,
+    minHeight: 42,
+    backgroundColor: "#334155",
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 6,
+    paddingHorizontal: 8,
+  },
+  pageToolButtonDisabled: { opacity: 0.45 },
+  pageToolDeleteButton: { backgroundColor: "#ef4444" },
+  pageToolText: {
+    color: "#fff",
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  undoBar: {
+    marginHorizontal: 12,
+    marginBottom: 10,
+    minHeight: 42,
+    borderRadius: 12,
+    backgroundColor: "#1e293b",
+    borderWidth: 1,
+    borderColor: "#334155",
+    paddingHorizontal: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  undoText: {
+    color: "#cbd5e1",
+    fontSize: 13,
+    fontWeight: "500",
+  },
+  undoAction: {
+    color: "#818cf8",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  pageThumbsScroll: {
+    maxHeight: 92,
+    backgroundColor: "#0f172a",
+  },
+  pageThumbsContent: {
+    paddingHorizontal: 12,
+    paddingBottom: 10,
+    gap: 10,
+  },
+  pageThumbCard: {
+    width: 58,
+    height: 76,
+    backgroundColor: "#1e293b",
+    borderRadius: 12,
+    padding: 5,
+    borderWidth: 1,
+    borderColor: "transparent",
+    alignItems: "center",
+  },
+  pageThumbCardActive: {
+    borderColor: "#6366f1",
+    backgroundColor: "#312e81",
+  },
+  pageThumbImage: {
+    width: "100%",
+    height: 52,
+    borderRadius: 8,
+    resizeMode: "cover",
+    backgroundColor: "#fff",
+  },
+  pageThumbLabel: {
+    color: "#cbd5e1",
+    fontSize: 11,
+    fontWeight: "700",
+    marginTop: 4,
+  },
   resultContainer: {
     flex: 1,
     alignItems: "center",
@@ -1519,6 +2259,22 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "bold",
     marginLeft: 8,
+  },
+  pageAddAction: {
+    backgroundColor: "#334155",
+    borderRadius: 14,
+    minHeight: 52,
+    paddingHorizontal: 16,
+    marginBottom: 12,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  pageAddActionDisabled: { opacity: 0.5 },
+  pageAddActionText: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "600",
+    marginLeft: 12,
   },
   loadingOverlay: {
     position: "absolute",
