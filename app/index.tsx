@@ -69,6 +69,177 @@ type DocumentScannerModule = {
 };
 
 type GoogleMobileAdsModule = typeof import("react-native-google-mobile-ads");
+
+const LANGUAGE_STORAGE_KEY = "@itech_language";
+
+const translations = {
+  tr: {
+    addFromGallery: "Galeriden foto ekle",
+    addMergePage: "Sayfa Ekle / Birleştir",
+    addPage: "Sayfa Ekle",
+    addSignature: "İmza Ekle",
+    addWithCamera: "Kamerayla ekle",
+    all: "Tümü",
+    appSubtitle: "Belgelerinizi dijitalleştirin",
+    cancel: "İptal",
+    changeLanguage: "Dili değiştir",
+    chooseSignature: "İmza Seçin",
+    defaultDocumentNamePrefix: "iTech_Belge",
+    delete: "Sil",
+    deleteDocumentMessage: "Bu işlemi geri alamazsınız.",
+    deleteDocumentTitle: "Belgeyi Sil",
+    deletePageMessage: "Bu sayfayı silmek istiyor musun?",
+    deletePageTitle: "Sayfayı Sil",
+    deleteSignatureMessage: "Silinsin mi?",
+    deleteSignatureTitle: "İmzayı Sil",
+    done: "Bitti",
+    exit: "Çık",
+    exitMessage: "Kaydetmeden çıkmak istediğinize emin misiniz?",
+    exitTitle: "Çıkış Yap",
+    filesTitle: "Dosyalarım",
+    heroSubtitle: "Yapay zeka destekli belge tespiti",
+    heroTitle: "Hızlı Tarama Başlat",
+    importErrorMessage: "Belge eklenirken bir sorun oluştu.",
+    importErrorTitle: "İçe Aktarma Hatası",
+    importImage: "Resim Aktar",
+    languageSettingsSubtitle: "Uygulama dilini buradan değiştirebilirsiniz.",
+    languageSettingsTitle: "Dil",
+    languageSubtitle: "Uygulamayı hangi dilde kullanmak istersiniz?",
+    languageTitle: "Dil seçin / Choose language",
+    lastPageMessage: "Belgede en az bir sayfa kalmalı.",
+    lastPageTitle: "Son Sayfa",
+    mergeFiles: "PDF / Word / foto birleştir",
+    moveLeft: "Sola Taşı",
+    moveRight: "Sağa Taşı",
+    navFiles: "Dosyalar",
+    navHome: "Ana Sayfa",
+    noDocumentsFound: "Belge bulunamadı.",
+    noScansYet: "Henüz bir tarama yapmadınız.",
+    noSignatures: "Henüz imza yok.",
+    page: "Sayfa",
+    pageDeleted: "Sayfa silindi.",
+    pageMoved: "Sayfa taşındı.",
+    pagesAdded: "Sayfalar eklendi.",
+    pdfErrorMessage: "PDF çözümlenemedi.",
+    pdfErrorTitle: "PDF Hatası",
+    recentScans: "Son Taramalar",
+    resolvingDocument: "Belge çözülüyor...",
+    scannerUnavailableMessage:
+      "Bu özellik için native modülü içeren development build gerekir. Şimdilik galeriden foto veya dosya ekleyebilirsin.",
+    scannerUnavailableTitle: "Tarayıcı kullanılamıyor",
+    scanNewWetSignature: "Yeni Islak İmza Tara",
+    searchPlaceholder: "Belgelerde Ara...",
+    share: "Paylaş",
+    shareAsJpg: "JPG olarak paylaş",
+    shareAsPdf: "PDF olarak paylaş",
+    shareAsWord: "Word olarak paylaş",
+    smartTools: "Akıllı Araçlar",
+    someFilesSkippedMessage:
+      "Şimdilik yalnızca PDF, DOCX ve görsel dosyaları içe aktarabiliyorum.",
+    someFilesSkippedTitle: "Bazı Dosyalar Atlandı",
+    stay: "Vazgeç",
+    tipMessage: "Kamera açıldığında filtre ikonuna basıp 'Renkli' seçin!",
+    tipTitle: "İpucu",
+    undo: "Geri Al",
+    unsupportedFileMessage:
+      "Şimdilik PDF, DOCX ve görsel dosyaları ekleyebiliyorum.",
+    unsupportedFileTitle: "Desteklenmeyen Dosya",
+    uploadDocument: "Belge Yükle",
+    wordErrorMessage: "Word belgesi çözümlenemedi.",
+    wordErrorTitle: "Word Hatası",
+  },
+  en: {
+    addFromGallery: "Add from gallery",
+    addMergePage: "Add / Merge Page",
+    addPage: "Add Page",
+    addSignature: "Add Signature",
+    addWithCamera: "Add with camera",
+    all: "All",
+    appSubtitle: "Digitize your documents",
+    cancel: "Cancel",
+    changeLanguage: "Change language",
+    chooseSignature: "Choose Signature",
+    defaultDocumentNamePrefix: "iTech_Document",
+    delete: "Delete",
+    deleteDocumentMessage: "You cannot undo this action.",
+    deleteDocumentTitle: "Delete Document",
+    deletePageMessage: "Do you want to delete this page?",
+    deletePageTitle: "Delete Page",
+    deleteSignatureMessage: "Delete this signature?",
+    deleteSignatureTitle: "Delete Signature",
+    done: "Done",
+    exit: "Exit",
+    exitMessage: "Are you sure you want to exit without saving?",
+    exitTitle: "Exit",
+    filesTitle: "My Files",
+    heroSubtitle: "AI-assisted document detection",
+    heroTitle: "Start Quick Scan",
+    importErrorMessage: "Something went wrong while adding the document.",
+    importErrorTitle: "Import Error",
+    importImage: "Import Image",
+    languageSettingsSubtitle: "You can change the app language here.",
+    languageSettingsTitle: "Language",
+    languageSubtitle: "Which language would you like to use?",
+    languageTitle: "Choose language / Dil seçin",
+    lastPageMessage: "The document must keep at least one page.",
+    lastPageTitle: "Last Page",
+    mergeFiles: "Merge PDF / Word / photo",
+    moveLeft: "Move Left",
+    moveRight: "Move Right",
+    navFiles: "Files",
+    navHome: "Home",
+    noDocumentsFound: "No documents found.",
+    noScansYet: "You haven't scanned anything yet.",
+    noSignatures: "No signatures yet.",
+    page: "Page",
+    pageDeleted: "Page deleted.",
+    pageMoved: "Page moved.",
+    pagesAdded: "Pages added.",
+    pdfErrorMessage: "PDF could not be parsed.",
+    pdfErrorTitle: "PDF Error",
+    recentScans: "Recent Scans",
+    resolvingDocument: "Resolving document...",
+    scannerUnavailableMessage:
+      "This feature needs a development build that includes the native scanner module. For now, you can add a photo from the gallery or import a file.",
+    scannerUnavailableTitle: "Scanner unavailable",
+    scanNewWetSignature: "Scan New Wet Signature",
+    searchPlaceholder: "Search documents...",
+    share: "Share",
+    shareAsJpg: "Share as JPG",
+    shareAsPdf: "Share as PDF",
+    shareAsWord: "Share as Word",
+    smartTools: "Smart Tools",
+    someFilesSkippedMessage:
+      "For now, I can only import PDF, DOCX, and image files.",
+    someFilesSkippedTitle: "Some Files Skipped",
+    stay: "Stay",
+    tipMessage: "When the camera opens, tap the filter icon and choose 'Color'.",
+    tipTitle: "Tip",
+    undo: "Undo",
+    unsupportedFileMessage:
+      "For now, I can add PDF, DOCX, and image files.",
+    unsupportedFileTitle: "Unsupported File",
+    uploadDocument: "Upload Document",
+    wordErrorMessage: "Word document could not be parsed.",
+    wordErrorTitle: "Word Error",
+  },
+} as const;
+
+type LanguageCode = keyof typeof translations;
+type TranslationKey = keyof (typeof translations)["tr"];
+
+const isLanguageCode = (value: string | null): value is LanguageCode =>
+  value === "tr" || value === "en";
+
+const languageOptions: {
+  code: LanguageCode;
+  title: string;
+  subtitle: string;
+}[] = [
+  { code: "tr", title: "Türkçe", subtitle: "Türkçe arayüz" },
+  { code: "en", title: "English", subtitle: "English interface" },
+];
+
 interface PlacedSignature {
   id: string;
   uri: string;
@@ -142,6 +313,10 @@ export default function App() {
   const [currentScreen, setCurrentScreen] = useState<
     "dashboard" | "editor" | "files"
   >("dashboard");
+  const [language, setLanguage] = useState<LanguageCode>("tr");
+  const [isLanguageReady, setIsLanguageReady] = useState(false);
+  const [isLanguageModalVisible, setLanguageModalVisible] = useState(false);
+  const [needsInitialLanguage, setNeedsInitialLanguage] = useState(false);
   const [scannedImagesList, setScannedImagesList] = useState<string[]>([]);
   const [currentPage, setCurrentPage] = useState(0);
   const [documentName, setDocumentName] = useState("Yeni_Belge");
@@ -179,6 +354,17 @@ export default function App() {
   const interstitialRef = useRef<any>(null);
   const processingImportIdRef = useRef<string | null>(null);
   const actionCounter = useRef(0);
+  const t = useCallback(
+    (key: TranslationKey) => translations[language][key],
+    [language],
+  );
+
+  const selectLanguage = async (nextLanguage: LanguageCode) => {
+    setLanguage(nextLanguage);
+    setNeedsInitialLanguage(false);
+    setLanguageModalVisible(false);
+    await AsyncStorage.setItem(LANGUAGE_STORAGE_KEY, nextLanguage);
+  };
 
   useEffect(() => {
     loadData();
@@ -234,12 +420,25 @@ export default function App() {
 
   const loadData = async () => {
     try {
-      const storedScans = await AsyncStorage.getItem("@itech_scans");
-      const storedSigs = await AsyncStorage.getItem("@itech_signatures");
+      const [storedScans, storedSigs, storedLanguage] = await Promise.all([
+        AsyncStorage.getItem("@itech_scans"),
+        AsyncStorage.getItem("@itech_signatures"),
+        AsyncStorage.getItem(LANGUAGE_STORAGE_KEY),
+      ]);
       if (storedScans) setSavedScans(JSON.parse(storedScans));
       if (storedSigs) setSavedSignatures(JSON.parse(storedSigs));
+      if (isLanguageCode(storedLanguage)) {
+        setLanguage(storedLanguage);
+      } else {
+        setNeedsInitialLanguage(true);
+        setLanguageModalVisible(true);
+      }
     } catch (e) {
       console.error("Veriler yüklenemedi", e);
+      setNeedsInitialLanguage(true);
+      setLanguageModalVisible(true);
+    } finally {
+      setIsLanguageReady(true);
     }
   };
 
@@ -273,22 +472,25 @@ export default function App() {
 
   const showScannerUnavailableAlert = () => {
     Alert.alert(
-      "Tarayıcı kullanılamıyor",
-      "Bu özellik için native modülü içeren development build gerekir. Şimdilik galeriden foto veya dosya ekleyebilirsin.",
+      t("scannerUnavailableTitle"),
+      t("scannerUnavailableMessage"),
     );
   };
 
   const resetEditorState = useCallback(
     (defaultName?: string, id: string | null = null) => {
-    setPlacedSignatures([]);
-    setActiveSignId(null);
-    setUndoStack([]);
-    setDocumentName(
-      defaultName || `iTech_Belge_${Date.now().toString().slice(-4)}`,
-    );
-    setEditingDocumentId(id);
+      setPlacedSignatures([]);
+      setActiveSignId(null);
+      setUndoStack([]);
+      setDocumentName(
+        defaultName ||
+          `${t("defaultDocumentNamePrefix")}_${Date.now()
+            .toString()
+            .slice(-4)}`,
+      );
+      setEditingDocumentId(id);
     },
-    [],
+    [t],
   );
 
   const openSavedScan = (scan: SavedScan) => {
@@ -299,10 +501,10 @@ export default function App() {
   };
 
   const deleteScan = (scan: SavedScan) => {
-    Alert.alert("Belgeyi Sil", "Bu işlemi geri alamazsınız.", [
-      { text: "İptal", style: "cancel" },
+    Alert.alert(t("deleteDocumentTitle"), t("deleteDocumentMessage"), [
+      { text: t("cancel"), style: "cancel" },
       {
-        text: "Sil",
+        text: t("delete"),
         style: "destructive",
         onPress: async () => {
           try {
@@ -324,10 +526,10 @@ export default function App() {
   };
 
   const closeEditor = () => {
-    Alert.alert("Çıkış Yap", "Kaydetmeden çıkmak istediğinize emin misiniz?", [
-      { text: "Vazgeç", style: "cancel" },
+    Alert.alert(t("exitTitle"), t("exitMessage"), [
+      { text: t("stay"), style: "cancel" },
       {
-        text: "Çık",
+        text: t("exit"),
         style: "destructive",
         onPress: () => {
           setScannedImagesList([]);
@@ -422,7 +624,7 @@ export default function App() {
     async (pages: string[], append: boolean, defaultName?: string) => {
       if (append && scannedImagesList.length > 0) {
         const committedPages = await bakeCurrentPageIfNeeded();
-        rememberUndoState(committedPages, currentPage, "Sayfalar eklendi.");
+        rememberUndoState(committedPages, currentPage, t("pagesAdded"));
         setScannedImagesList([...committedPages, ...pages]);
         setCurrentPage(committedPages.length);
         setCurrentScreen("editor");
@@ -440,6 +642,7 @@ export default function App() {
       rememberUndoState,
       resetEditorState,
       scannedImagesList.length,
+      t,
     ],
   );
 
@@ -452,14 +655,14 @@ export default function App() {
       );
     } catch (error) {
       console.error(error);
-      Alert.alert("İçe Aktarma Hatası", "Belge eklenirken bir sorun oluştu.");
+      Alert.alert(t("importErrorTitle"), t("importErrorMessage"));
     } finally {
       setActiveImport(null);
       if (processingImportIdRef.current === job.id) {
         processingImportIdRef.current = null;
       }
     }
-  }, [applyPagesToWorkspace]);
+  }, [applyPagesToWorkspace, t]);
 
   useEffect(() => {
     if (!activeImport && pendingImports.length > 0) {
@@ -479,6 +682,16 @@ export default function App() {
       void completeImport(activeImport, [activeImport.uri]);
     }
   }, [activeImport, completeImport]);
+
+  if (!isLanguageReady) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="large" color="#6366f1" />
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   const runPageAddAction = (action: () => Promise<void>) => {
     if (isPageAddBusy) return;
@@ -557,16 +770,16 @@ export default function App() {
         const validJobs = jobs.filter(Boolean) as ImportJob[];
         if (validJobs.length === 0) {
           Alert.alert(
-            "Desteklenmeyen Dosya",
-            "Şimdilik PDF, DOCX ve görsel dosyaları ekleyebiliyorum.",
+            t("unsupportedFileTitle"),
+            t("unsupportedFileMessage"),
           );
           return;
         }
 
         if (validJobs.length !== jobs.length) {
           Alert.alert(
-            "Bazı Dosyalar Atlandı",
-            "Şimdilik yalnızca PDF, DOCX ve görsel dosyaları içe aktarabiliyorum.",
+            t("someFilesSkippedTitle"),
+            t("someFilesSkippedMessage"),
           );
         }
 
@@ -628,10 +841,7 @@ export default function App() {
       }
 
       setIsProcessingSignature(true);
-      Alert.alert(
-        "İpucu",
-        "Kamera açıldığında filtre ikonuna basıp 'Renkli' seçin!",
-      );
+      Alert.alert(t("tipTitle"), t("tipMessage"));
       setTimeout(async () => {
         const { scannedImages, status } = await scanner.scanDocument({
           croppedImageQuality: 100,
@@ -667,7 +877,7 @@ export default function App() {
 
     try {
       const committedPages = await bakeCurrentPageIfNeeded();
-      rememberUndoState(committedPages, currentPage, "Sayfa taşındı.");
+      rememberUndoState(committedPages, currentPage, t("pageMoved"));
       const updatedPages = [...committedPages];
       [updatedPages[currentPage], updatedPages[targetIndex]] = [
         updatedPages[targetIndex],
@@ -682,19 +892,19 @@ export default function App() {
 
   const deleteCurrentPage = async () => {
     if (scannedImagesList.length <= 1) {
-      Alert.alert("Son Sayfa", "Belgede en az bir sayfa kalmalı.");
+      Alert.alert(t("lastPageTitle"), t("lastPageMessage"));
       return;
     }
 
-    Alert.alert("Sayfayı Sil", "Bu sayfayı silmek istiyor musun?", [
-      { text: "İptal", style: "cancel" },
+    Alert.alert(t("deletePageTitle"), t("deletePageMessage"), [
+      { text: t("cancel"), style: "cancel" },
       {
-        text: "Sil",
+        text: t("delete"),
         style: "destructive",
         onPress: async () => {
           try {
             const committedPages = await bakeCurrentPageIfNeeded();
-            rememberUndoState(committedPages, currentPage, "Sayfa silindi.");
+            rememberUndoState(committedPages, currentPage, t("pageDeleted"));
             const updatedPages = committedPages.filter(
               (_, index) => index !== currentPage,
             );
@@ -743,10 +953,10 @@ export default function App() {
   };
 
   const deleteSignatureFromStorage = (uriToDelete: string) => {
-    Alert.alert("İmzayı Sil", "Silinsin mi?", [
-      { text: "İptal" },
+    Alert.alert(t("deleteSignatureTitle"), t("deleteSignatureMessage"), [
+      { text: t("cancel") },
       {
-        text: "Sil",
+        text: t("delete"),
         style: "destructive",
         onPress: async () => {
           const updated = savedSignatures.filter((uri) => uri !== uriToDelete);
@@ -859,7 +1069,9 @@ export default function App() {
             {
               id: Date.now().toString(),
               title: documentName,
-              date: new Date().toLocaleDateString("tr-TR"),
+              date: new Date().toLocaleDateString(
+                language === "tr" ? "tr-TR" : "en-US",
+              ),
               uri: permanentUris[0],
               pages: permanentUris,
             },
@@ -897,7 +1109,7 @@ export default function App() {
             { color: currentScreen === "dashboard" ? "#6366f1" : "#64748b" },
           ]}
         >
-          Ana Sayfa
+          {t("navHome")}
         </Text>
       </TouchableOpacity>
       <TouchableOpacity
@@ -917,7 +1129,7 @@ export default function App() {
             { color: currentScreen === "files" ? "#6366f1" : "#64748b" },
           ]}
         >
-          Dosyalar
+          {t("navFiles")}
         </Text>
       </TouchableOpacity>
     </View>
@@ -931,9 +1143,16 @@ export default function App() {
           <Text style={styles.appName}>
             Cam<Text style={styles.appNameBold}>Scanner</Text>
           </Text>
-          <Text style={styles.appSubtitle}>Belgelerinizi dijitalleştirin</Text>
+          <Text style={styles.appSubtitle}>{t("appSubtitle")}</Text>
         </View>
-        {/* <TouchableOpacity style={styles.profileBtn} onPress={() => Alert.alert("🚀", "Profil yakında.")}><Ionicons name="person-circle" size={36} color="#6366f1" /></TouchableOpacity> */}
+        <TouchableOpacity
+          accessibilityLabel={t("changeLanguage")}
+          accessibilityRole="button"
+          style={styles.profileBtn}
+          onPress={() => setLanguageModalVisible(true)}
+        >
+          <Ionicons name="globe-outline" size={32} color="#6366f1" />
+        </TouchableOpacity>
       </View>
       <ScrollView
         showsVerticalScrollIndicator={false}
@@ -949,10 +1168,8 @@ export default function App() {
               <Ionicons name="scan" size={32} color="#fff" />
             </View>
             <View>
-              <Text style={styles.heroTitle}>Hızlı Tarama Başlat</Text>
-              <Text style={styles.heroSubtitle}>
-                Yapay zeka destekli belge tespiti
-              </Text>
+              <Text style={styles.heroTitle}>{t("heroTitle")}</Text>
+              <Text style={styles.heroSubtitle}>{t("heroSubtitle")}</Text>
             </View>
           </View>
           <Ionicons
@@ -963,7 +1180,7 @@ export default function App() {
           />
         </TouchableOpacity>
         <View style={styles.sectionContainer}>
-          <Text style={styles.sectionTitle}>Akıllı Araçlar</Text>
+          <Text style={styles.sectionTitle}>{t("smartTools")}</Text>
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
@@ -978,7 +1195,7 @@ export default function App() {
               >
                 <Ionicons name="document-text" size={22} color="#ef4444" />
               </View>
-              <Text style={styles.chipLabel}>Belge Yükle</Text>
+              <Text style={styles.chipLabel}>{t("uploadDocument")}</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.toolChip}
@@ -989,17 +1206,17 @@ export default function App() {
               >
                 <Ionicons name="image" size={22} color="#10b981" />
               </View>
-              <Text style={styles.chipLabel}>Resim Aktar</Text>
+              <Text style={styles.chipLabel}>{t("importImage")}</Text>
             </TouchableOpacity>
           </ScrollView>
         </View>
         <View style={styles.sectionContainer}>
           <View style={styles.recentsHeader}>
-            <Text style={styles.sectionTitle}>Son Taramalar</Text>
+            <Text style={styles.sectionTitle}>{t("recentScans")}</Text>
             {savedScans.length > 0 && (
               <TouchableOpacity onPress={() => setCurrentScreen("files")}>
                 <Text style={styles.seeAllText}>
-                  Tümü ({savedScans.length})
+                  {t("all")} ({savedScans.length})
                 </Text>
               </TouchableOpacity>
             )}
@@ -1008,7 +1225,7 @@ export default function App() {
             <View style={styles.emptyScansContainer}>
               <Ionicons name="documents-outline" size={40} color="#334155" />
               <Text style={styles.emptyScansText}>
-                Henüz bir tarama yapmadınız.
+                {t("noScansYet")}
               </Text>
             </View>
           ) : (
@@ -1064,7 +1281,7 @@ export default function App() {
     return (
       <View style={styles.dashboardContainer}>
         <View style={styles.filesHeader}>
-          <Text style={styles.filesTitle}>Dosyalarım</Text>
+          <Text style={styles.filesTitle}>{t("filesTitle")}</Text>
           <TouchableOpacity
             onPress={() => setViewMode((v) => (v === "list" ? "grid" : "list"))}
           >
@@ -1084,7 +1301,7 @@ export default function App() {
           />
           <TextInput
             style={styles.searchInput}
-            placeholder="Belgelerde Ara..."
+            placeholder={t("searchPlaceholder")}
             placeholderTextColor="#64748b"
             value={searchQuery}
             onChangeText={setSearchQuery}
@@ -1102,7 +1319,9 @@ export default function App() {
           {filtered.length === 0 ? (
             <View style={styles.emptyScansContainer}>
               <Ionicons name="folder-open-outline" size={50} color="#334155" />
-              <Text style={styles.emptyScansText}>Belge bulunamadı.</Text>
+              <Text style={styles.emptyScansText}>
+                {t("noDocumentsFound")}
+              </Text>
             </View>
           ) : (
             <View style={viewMode === "grid" ? styles.gridContainer : {}}>
@@ -1196,7 +1415,7 @@ export default function App() {
           onPress={saveDocumentAndClose}
           style={styles.saveHeaderButton}
         >
-          <Text style={styles.saveHeaderText}>Bitti</Text>
+          <Text style={styles.saveHeaderText}>{t("done")}</Text>
         </TouchableOpacity>
       </View>
       {scannedImagesList.length > 1 && (
@@ -1212,7 +1431,7 @@ export default function App() {
             />
           </TouchableOpacity>
           <Text style={styles.pageNavText}>
-            Sayfa {currentPage + 1} / {scannedImagesList.length}
+            {t("page")} {currentPage + 1} / {scannedImagesList.length}
           </Text>
           <TouchableOpacity
             onPress={() => changePage(currentPage + 1)}
@@ -1240,7 +1459,7 @@ export default function App() {
           onPress={openPageAddOptions}
         >
           <Ionicons name="add-circle-outline" size={20} color="#fff" />
-          <Text style={styles.pageToolText}>Sayfa Ekle</Text>
+          <Text style={styles.pageToolText}>{t("addPage")}</Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={[
@@ -1251,7 +1470,7 @@ export default function App() {
           disabled={currentPage === 0}
         >
           <Ionicons name="arrow-back-outline" size={18} color="#fff" />
-          <Text style={styles.pageToolText}>Sola Taşı</Text>
+          <Text style={styles.pageToolText}>{t("moveLeft")}</Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={[
@@ -1263,14 +1482,14 @@ export default function App() {
           disabled={currentPage === scannedImagesList.length - 1}
         >
           <Ionicons name="arrow-forward-outline" size={18} color="#fff" />
-          <Text style={styles.pageToolText}>Sağa Taşı</Text>
+          <Text style={styles.pageToolText}>{t("moveRight")}</Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.pageToolButton, styles.pageToolDeleteButton]}
           onPress={deleteCurrentPage}
         >
           <Ionicons name="trash-outline" size={18} color="#fff" />
-          <Text style={styles.pageToolText}>Sil</Text>
+          <Text style={styles.pageToolText}>{t("delete")}</Text>
         </TouchableOpacity>
       </View>
       {undoStack.length > 0 && (
@@ -1279,7 +1498,7 @@ export default function App() {
             {undoStack[undoStack.length - 1].label}
           </Text>
           <TouchableOpacity onPress={undoLastEditorAction}>
-            <Text style={styles.undoAction}>Geri Al</Text>
+            <Text style={styles.undoAction}>{t("undo")}</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -1380,14 +1599,14 @@ export default function App() {
             onPress={() => setSignModalVisible(true)}
           >
             <MaterialCommunityIcons name="draw-pen" size={24} color="#fff" />
-            <Text style={styles.toolbarTextMain}>İmza Ekle</Text>
+            <Text style={styles.toolbarTextMain}>{t("addSignature")}</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.toolbarBtnShare}
             onPress={shareDocument}
           >
             <Ionicons name="share-social" size={24} color="#fff" />
-            <Text style={styles.toolbarTextShare}>Paylaş</Text>
+            <Text style={styles.toolbarTextShare}>{t("share")}</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -1399,7 +1618,7 @@ export default function App() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>İmza Seçin</Text>
+              <Text style={styles.modalTitle}>{t("chooseSignature")}</Text>
               <TouchableOpacity onPress={() => setSignModalVisible(false)}>
                 <Ionicons name="close-circle" size={28} color="#475569" />
               </TouchableOpacity>
@@ -1428,7 +1647,7 @@ export default function App() {
                 ))}
               </ScrollView>
             ) : (
-              <Text style={styles.emptySignText}>Henüz imza yok.</Text>
+              <Text style={styles.emptySignText}>{t("noSignatures")}</Text>
             )}
             <TouchableOpacity
               style={styles.newSignBtn}
@@ -1444,7 +1663,7 @@ export default function App() {
                 <>
                   <Ionicons name="add-circle-outline" size={24} color="#fff" />
                   <Text style={styles.newSignBtnText}>
-                    Yeni Islak İmza Tara
+                    {t("scanNewWetSignature")}
                   </Text>
                 </>
               )}
@@ -1463,7 +1682,7 @@ export default function App() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Paylaş</Text>
+              <Text style={styles.modalTitle}>{t("share")}</Text>
               <TouchableOpacity
                 disabled={isCapturing}
                 onPress={() => setShareModalVisible(false)}
@@ -1480,7 +1699,7 @@ export default function App() {
               onPress={() => runShareAction("jpg")}
             >
               <Ionicons name="image-outline" size={22} color="#fff" />
-              <Text style={styles.pageAddActionText}>JPG olarak paylaş</Text>
+              <Text style={styles.pageAddActionText}>{t("shareAsJpg")}</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[
@@ -1491,7 +1710,7 @@ export default function App() {
               onPress={() => runShareAction("pdf")}
             >
               <Ionicons name="document-text-outline" size={22} color="#fff" />
-              <Text style={styles.pageAddActionText}>PDF olarak paylaş</Text>
+              <Text style={styles.pageAddActionText}>{t("shareAsPdf")}</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[
@@ -1502,7 +1721,7 @@ export default function App() {
               onPress={() => runShareAction("word")}
             >
               <Ionicons name="document-outline" size={22} color="#fff" />
-              <Text style={styles.pageAddActionText}>Word olarak paylaş</Text>
+              <Text style={styles.pageAddActionText}>{t("shareAsWord")}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -1518,7 +1737,7 @@ export default function App() {
           <View style={styles.modalOverlay}>
             <View style={styles.modalContent}>
               <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Sayfa Ekle / Birleştir</Text>
+                <Text style={styles.modalTitle}>{t("addMergePage")}</Text>
               <TouchableOpacity
                 disabled={isPageAddBusy}
                 onPress={() => setPageAddModalVisible(false)}
@@ -1535,7 +1754,7 @@ export default function App() {
               onPress={() => runPageAddAction(() => scanDocument(true))}
             >
               <Ionicons name="scan-outline" size={22} color="#fff" />
-              <Text style={styles.pageAddActionText}>Kamerayla ekle</Text>
+              <Text style={styles.pageAddActionText}>{t("addWithCamera")}</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[
@@ -1546,7 +1765,9 @@ export default function App() {
               onPress={() => runPageAddAction(() => importFromGallery(true))}
             >
               <Ionicons name="images-outline" size={22} color="#fff" />
-              <Text style={styles.pageAddActionText}>Galeriden foto ekle</Text>
+              <Text style={styles.pageAddActionText}>
+                {t("addFromGallery")}
+              </Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[
@@ -1557,14 +1778,81 @@ export default function App() {
               onPress={() => runPageAddAction(() => queueDocumentImports(true))}
             >
               <Ionicons name="documents-outline" size={22} color="#fff" />
-              <Text style={styles.pageAddActionText}>
-                PDF / Word / foto birleştir
-              </Text>
+              <Text style={styles.pageAddActionText}>{t("mergeFiles")}</Text>
             </TouchableOpacity>
           </View>
         </View>
       </Modal>
     </View>
+  );
+
+  const renderLanguageModal = () => (
+    <Modal
+      visible={isLanguageModalVisible}
+      transparent={true}
+      animationType="fade"
+      onRequestClose={() => {
+        if (!needsInitialLanguage) setLanguageModalVisible(false);
+      }}
+    >
+      <View style={styles.languageOverlay}>
+        <View style={styles.languageCard}>
+          <View style={styles.languageHeader}>
+            <View style={styles.languageHeaderText}>
+              <Text style={styles.languageTitle}>
+                {needsInitialLanguage
+                  ? t("languageTitle")
+                  : t("languageSettingsTitle")}
+              </Text>
+              <Text style={styles.languageSubtitle}>
+                {needsInitialLanguage
+                  ? t("languageSubtitle")
+                  : t("languageSettingsSubtitle")}
+              </Text>
+            </View>
+            {!needsInitialLanguage && (
+              <TouchableOpacity
+                style={styles.languageCloseButton}
+                onPress={() => setLanguageModalVisible(false)}
+              >
+                <Ionicons name="close" size={22} color="#cbd5e1" />
+              </TouchableOpacity>
+            )}
+          </View>
+          {languageOptions.map((option) => {
+            const isSelected = language === option.code;
+            return (
+              <TouchableOpacity
+                key={option.code}
+                style={[
+                  styles.languageOption,
+                  isSelected && styles.languageOptionSelected,
+                ]}
+                activeOpacity={0.85}
+                onPress={() => selectLanguage(option.code)}
+              >
+                <View style={styles.languageOptionText}>
+                  <Text
+                    style={[
+                      styles.languageOptionTitle,
+                      isSelected && styles.languageOptionTitleSelected,
+                    ]}
+                  >
+                    {option.title}
+                  </Text>
+                  <Text style={styles.languageOptionSubtitle}>
+                    {option.subtitle}
+                  </Text>
+                </View>
+                {isSelected && (
+                  <Ionicons name="checkmark-circle" size={24} color="#818cf8" />
+                )}
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      </View>
+    </Modal>
   );
 
   return (
@@ -1615,8 +1903,8 @@ export default function App() {
                 }
               } else if (parsed.type === "import_error") {
                 Alert.alert(
-                  "PDF Hatası",
-                  parsed.message || "PDF çözümlenemedi.",
+                  t("pdfErrorTitle"),
+                  parsed.message || t("pdfErrorMessage"),
                 );
                 setActiveImport(null);
               }
@@ -1673,8 +1961,8 @@ export default function App() {
                 }
               } else if (parsed.type === "import_error") {
                 Alert.alert(
-                  "Word Hatası",
-                  parsed.message || "Word belgesi çözümlenemedi.",
+                  t("wordErrorTitle"),
+                  parsed.message || t("wordErrorMessage"),
                 );
                 setActiveImport(null);
               }
@@ -1775,12 +2063,13 @@ export default function App() {
       {isLoadingDocument && (
         <View style={styles.loadingOverlay}>
           <ActivityIndicator size="large" color="#6366f1" />
-          <Text style={styles.loadingText}>Belge çözülüyor...</Text>
+          <Text style={styles.loadingText}>{t("resolvingDocument")}</Text>
         </View>
       )}
       {currentScreen === "dashboard" && renderDashboard()}
       {currentScreen === "files" && renderFilesScreen()}
       {currentScreen === "editor" && renderEditor()}
+      {renderLanguageModal()}
     </SafeAreaView>
   );
 }
@@ -2294,4 +2583,72 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
   },
   loadingSubText: { color: "#94a3b8", marginTop: 5, fontSize: 13 },
+  languageOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.92)",
+    justifyContent: "center",
+    padding: 20,
+  },
+  languageCard: {
+    backgroundColor: "#1e293b",
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "#334155",
+    padding: 20,
+  },
+  languageHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    marginBottom: 12,
+  },
+  languageHeaderText: { flex: 1, paddingRight: 12 },
+  languageTitle: {
+    color: "#f8fafc",
+    fontSize: 22,
+    fontWeight: "800",
+    marginBottom: 6,
+  },
+  languageSubtitle: {
+    color: "#94a3b8",
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  languageCloseButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: "#334155",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  languageOption: {
+    minHeight: 70,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#334155",
+    backgroundColor: "#0f172a",
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    marginTop: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  languageOptionSelected: {
+    borderColor: "#6366f1",
+    backgroundColor: "#312e81",
+  },
+  languageOptionText: { flex: 1 },
+  languageOptionTitle: {
+    color: "#f8fafc",
+    fontSize: 17,
+    fontWeight: "700",
+    marginBottom: 4,
+  },
+  languageOptionTitleSelected: { color: "#fff" },
+  languageOptionSubtitle: {
+    color: "#94a3b8",
+    fontSize: 13,
+  },
 });
