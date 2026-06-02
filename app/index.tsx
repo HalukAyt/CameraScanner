@@ -353,7 +353,6 @@ export default function App() {
   const [isAdLoaded, setIsAdLoaded] = useState(false);
   const interstitialRef = useRef<any>(null);
   const processingImportIdRef = useRef<string | null>(null);
-  const actionCounter = useRef(0);
   const t = useCallback(
     (key: TranslationKey) => translations[language][key],
     [language],
@@ -442,11 +441,18 @@ export default function App() {
     }
   };
 
-  const handleAdFrequency = () => {
-    actionCounter.current += 1;
-    if (actionCounter.current % 3 === 0 && isAdLoaded && interstitialRef.current) {
-      setTimeout(() => interstitialRef.current?.show(), 500);
-    }
+  const showInterstitialAd = () => {
+    if (!isAdLoaded || !interstitialRef.current) return;
+
+    setIsAdLoaded(false);
+    setTimeout(() => {
+      try {
+        interstitialRef.current?.show();
+      } catch (error) {
+        console.warn("Interstitial ad could not be shown.", error);
+        interstitialRef.current?.load?.();
+      }
+    }, 350);
   };
 
   const bannerAdUnitId = adsModule
@@ -785,6 +791,7 @@ export default function App() {
 
         setIsLoadingDocument(true);
         setPendingImports((current) => [...current, ...validJobs]);
+        showInterstitialAd();
       }
     } catch (err) {
       setIsLoadingDocument(false);
@@ -1032,7 +1039,6 @@ export default function App() {
         }
         setIsCapturing(false);
         await Sharing.shareAsync(customUri);
-        handleAdFrequency();
       } catch (e) {
         setIsCapturing(false);
         console.error(e);
@@ -1084,7 +1090,6 @@ export default function App() {
         resetEditorState();
         setCurrentScreen("dashboard");
         setIsCapturing(false);
-        handleAdFrequency();
       } catch (e) {
         setIsCapturing(false);
         console.error(e);
