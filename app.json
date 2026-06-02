@@ -13,11 +13,22 @@
       "bundleIdentifier": "com.halukayt.CameraScanner",
       "infoPlist": {
         "CFBundleDevelopmentRegion": "tr",
-        "CFBundleLocalizations": ["tr"],
+        "CFBundleLocalizations": [
+          "tr"
+        ],
         "ITSAppUsesNonExemptEncryption": false,
         "NSCameraUsageDescription": "CameraScanner, belgelerinizi taramak ve dijitalleştirmek için kameranıza erişim ister.",
         "NSPhotoLibraryUsageDescription": "Galerinizdeki mevcut belgeleri seçip tarayabilmeniz için fotoğraf kütüphanenize erişim gerekiyor.",
-        "NSPhotoLibraryAddUsageDescription": "Taranan belgeleri galerinize kaydedebilmeniz için fotoğraf kütüphanesine yazma izni gerekiyor."
+        "NSPhotoLibraryAddUsageDescription": "Taranan belgeleri galerinize kaydedebilmeniz için fotoğraf kütüphanesine yazma izni gerekiyor.",
+        "NSUserTrackingUsageDescription": "Bu uygulama, size daha iyi ve kişiselleştirilmiş reklamlar sunmak için cihazınızdaki etkinliklerinizi takip etmek isteyebilir.",
+        "SKAdNetworkItems": [
+          {
+            "SKAdNetworkIdentifier": "v9wttpbfk9.skadnetwork"
+          },
+          {
+            "SKAdNetworkIdentifier": "n38lu8286q.skadnetwork"
+          }
+        ]
       }
     },
     "android": {
@@ -66,7 +77,8 @@
         "react-native-google-mobile-ads",
         {
           "androidAppId": "ca-app-pub-7283360706215445~8376099567",
-          "iosAppId": "ca-app-pub-7283360706215445~1388019381"
+          "iosAppId": "ca-app-pub-7283360706215445~1388019381",
+          "userTrackingUsageDescription": "Bu uygulama, size daha iyi ve kişiselleştirilmiş reklamlar sunmak için cihazınızdaki etkinliklerinizi takip etmek isteyebilir."
         }
       ]
     ],
