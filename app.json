@@ -2,7 +2,7 @@
   "expo": {
     "name": "CameraScanner",
     "slug": "CameraScanner",
-    "version": "1.2.1",
+    "version": "1.3.0",
     "orientation": "portrait",
     "icon": "./assets/images/ITECH.png",
     "scheme": "camerascanner",
@@ -20,7 +20,7 @@
         "NSCameraUsageDescription": "CameraScanner, belgelerinizi taramak ve dijitalleştirmek için kameranıza erişim ister.",
         "NSPhotoLibraryUsageDescription": "Galerinizdeki mevcut belgeleri seçip tarayabilmeniz için fotoğraf kütüphanenize erişim gerekiyor.",
         "NSPhotoLibraryAddUsageDescription": "Taranan belgeleri galerinize kaydedebilmeniz için fotoğraf kütüphanesine yazma izni gerekiyor.",
-        "NSUserTrackingUsageDescription": "Bu uygulama, size daha iyi ve kişiselleştirilmiş reklamlar sunmak için cihazınızdaki etkinliklerinizi takip etmek isteyebilir.",
+        "NSUserTrackingUsageDescription": "CameraScanner, size alakalı reklamlar sunmak ve reklam performansını ölçmek için cihaz tanımlayıcınızı kullanmak ister.",
         "SKAdNetworkItems": [
           {
             "SKAdNetworkIdentifier": "v9wttpbfk9.skadnetwork"
@@ -42,9 +42,7 @@
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "android.permission.CAMERA",
-        "android.permission.RECORD_AUDIO",
-        "android.permission.READ_EXTERNAL_STORAGE",
-        "android.permission.WRITE_EXTERNAL_STORAGE"
+        "android.permission.READ_EXTERNAL_STORAGE"
       ],
       "package": "com.halukayt.CameraScanner"
     },
@@ -78,7 +76,13 @@
         {
           "androidAppId": "ca-app-pub-7283360706215445~8376099567",
           "iosAppId": "ca-app-pub-7283360706215445~1388019381",
-          "userTrackingUsageDescription": "Bu uygulama, size daha iyi ve kişiselleştirilmiş reklamlar sunmak için cihazınızdaki etkinliklerinizi takip etmek isteyebilir."
+          "userTrackingUsageDescription": "CameraScanner, size alakalı reklamlar sunmak ve reklam performansını ölçmek için cihaz tanımlayıcınızı kullanmak ister."
+        }
+      ],
+      [
+        "expo-tracking-transparency",
+        {
+          "userTrackingPermission": "CameraScanner, size alakalı reklamlar sunmak ve reklam performansını ölçmek için cihaz tanımlayıcınızı kullanmak ister."
         }
       ]
     ],

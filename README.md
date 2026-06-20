@@ -1,50 +1,48 @@
-# Welcome to your Expo app 👋
+# CameraScanner
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Expo tabanli belge tarama uygulamasi. Uygulama cok sayfali tarama, dosya ice aktarma, imza ekleme, belge yonetimi, OCR metni, temel goruntu duzenleme ve PDF/JPG/Word uyumlu paylasim akislarini hedefler.
 
-## Get started
+## Mevcut Ozellikler
 
-1. Install dependencies
+- Kamera ile belge tarama ve galeriden gorsel ekleme
+- Belge, form, slayt, beyaz tahta, kimlik ve kitap icin yakalama modu secimi
+- PDF, DOCX ve gorsel dosyalarini belgeye donusturme/birlestirme
+- Cok sayfali belge editoru: sayfa ekleme, silme, siralama ve geri alma
+- Gorsel araclari: sayfa dondurme, gri ton, siyah-beyaz ve netlestirme filtresi
+- Sayfa bazli OCR metni: otomatik okuma, dil secimi ve elle duzenleme
+- Baslik, etiket, favori, tarama modu, filigran ve OCR icerigine gore belge arama
+- Kayitli imza tarama, saklama, belge uzerine yerlestirme, olcekleme ve dondurme
+- PDF/Word ciktilarina filigran ekleme
+- JPG, PDF, sikistirilmis PDF ve Word uyumlu dosya olarak paylasma
+- Sistem yazdirma ekranina belge gonderme
+- Turkce ve Ingilizce arayuz
+- Google Mobile Ads ve iOS App Tracking Transparency akisi
 
-   ```bash
-   npm install
-   ```
+## Urun Kriterleri
 
-2. Start the app
+- Belgeler uygulama dizinine kopyalanir, boylece gecici dosyalar silinse bile kayitli belgeler korunur.
+- Android manifestinde scanner icin gereksiz ses kaydi ve harici yazma izinleri tutulmaz.
+- OCR ve dosya cozumleme icin WebView tabanli isleme kullanilir; PDF/DOCX/OCR CDN bagimliligi oldugu icin offline modda bu kisimlar sinirli calisabilir.
+- Etiket ve OCR verileri belgeyle beraber saklanir, arama yalnizca baslikla sinirli kalmaz.
+- Sikistirilmis PDF cikisi, sayfalari daha dusuk cozunurluk ve JPEG kalitesiyle yeniden isleyerek uretilir.
+- Filigran metni belgeyle saklanir ve PDF/Word ciktilarina sayfa uzerinde basilir.
 
-   ```bash
-   npx expo start
-   ```
+## Sonraki Asama
 
-In the output, you'll find options to open the app in a
+- Cihazlar arasi senkronizasyon ve yedekleme icin bulut backend
+- Link ile paylasim icin dosya yukleme ve yetki kontrolu
+- Fax gonderimi icin ulke bazli ucuncu parti fax servisi
+- PDF parola korumasi ve sifreleme icin native/PDF kutuphanesi
+- Excel/PPT donusturme ve PDF to Word/Excel/PPT icin sunucu tarafi converter
+- Kitap tarama icin sayfa egimi giderme ve iki sayfayi otomatik bolme
+- ID photo maker ve akilli ceviri icin ayri AI servisleri
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+## Calistirma
 
 ```bash
-npm run reset-project
+npm install
+npm run lint
+npx expo start
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
-
-## Learn more
-
-To learn more about developing your project with Expo, look at the following resources:
-
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
-
-## Join the community
-
-Join our community of developers creating universal apps.
-
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+Native belge tarayici ve reklam modulleri icin Expo development build gerekir.

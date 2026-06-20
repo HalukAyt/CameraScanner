@@ -2,9 +2,14 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as DocumentPicker from "expo-document-picker";
 import * as FileSystem from "expo-file-system/legacy";
+import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
+import {
+  getTrackingPermissionsAsync,
+  requestTrackingPermissionsAsync,
+} from "expo-tracking-transparency";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -37,10 +42,18 @@ interface SavedScan {
   date: string;
   uri: string;
   pages?: string[];
+  pageFiles?: string[];
+  pageTexts?: string[];
+  tags?: string[];
+  isFavorite?: boolean;
+  scanMode?: ScanMode;
+  watermarkText?: string;
 }
 
 type ImportKind = "pdf" | "docx" | "image";
-type ShareFormat = "jpg" | "pdf" | "word";
+type ShareFormat = "jpg" | "pdf" | "pdfCompressed" | "word" | "print";
+type ImageFilterMode = "gray" | "blackWhite" | "enhance";
+type ScanMode = "document" | "form" | "slide" | "whiteboard" | "idCard" | "book";
 
 interface ImportJob {
   id: string;
@@ -53,8 +66,22 @@ interface ImportJob {
 
 interface EditorSnapshot {
   pages: string[];
+  pageTexts: string[];
   currentPage: number;
   label: string;
+}
+
+interface ImageFilterJob {
+  id: string;
+  mode: ImageFilterMode;
+  pageIndex: number;
+  base64: string;
+}
+
+interface OcrJob {
+  id: string;
+  pageIndex: number;
+  base64: string;
 }
 
 const stripFileExtension = (name: string) => name.replace(/\.[^.]+$/, "");
@@ -71,6 +98,8 @@ type DocumentScannerModule = {
 type GoogleMobileAdsModule = typeof import("react-native-google-mobile-ads");
 
 const LANGUAGE_STORAGE_KEY = "@itech_language";
+const SCANS_STORAGE_KEY = "@itech_scans";
+const SIGNATURES_STORAGE_KEY = "@itech_signatures";
 
 const translations = {
   tr: {
@@ -82,8 +111,10 @@ const translations = {
     all: "Tümü",
     appSubtitle: "Belgelerinizi dijitalleştirin",
     cancel: "İptal",
+    captureModes: "Yakalama Modları",
     changeLanguage: "Dili değiştir",
     chooseSignature: "İmza Seçin",
+    compressedPdf: "Sıkıştırılmış PDF",
     defaultDocumentNamePrefix: "iTech_Belge",
     delete: "Sil",
     deleteDocumentMessage: "Bu işlemi geri alamazsınız.",
@@ -97,8 +128,14 @@ const translations = {
     exitMessage: "Kaydetmeden çıkmak istediğinize emin misiniz?",
     exitTitle: "Çıkış Yap",
     filesTitle: "Dosyalarım",
+    filterBlackWhite: "S/B",
+    filterEnhanced: "Netleştir",
+    filterGray: "Gri",
     heroSubtitle: "Yapay zeka destekli belge tespiti",
     heroTitle: "Hızlı Tarama Başlat",
+    imageProcessingErrorMessage: "Görsel işlenirken bir sorun oluştu.",
+    imageProcessingErrorTitle: "Görsel Hatası",
+    imageTools: "Görüntü",
     importErrorMessage: "Belge eklenirken bir sorun oluştu.",
     importErrorTitle: "İçe Aktarma Hatası",
     importImage: "Resim Aktar",
@@ -116,20 +153,40 @@ const translations = {
     noDocumentsFound: "Belge bulunamadı.",
     noScansYet: "Henüz bir tarama yapmadınız.",
     noSignatures: "Henüz imza yok.",
+    ocrErrorMessage:
+      "Metin okunamadı. İnternet bağlantısı veya belge netliği sorun yaratmış olabilir.",
+    ocrErrorTitle: "OCR Hatası",
+    ocrHint:
+      "OCR metnini otomatik çıkarabilir veya bu alanda elle düzenleyebilirsiniz.",
+    ocrLanguage: "OCR Dili",
+    ocrPlaceholder: "Bu sayfanın metni...",
+    ocrText: "OCR Metni",
     page: "Sayfa",
     pageDeleted: "Sayfa silindi.",
     pageMoved: "Sayfa taşındı.",
     pagesAdded: "Sayfalar eklendi.",
     pdfErrorMessage: "PDF çözümlenemedi.",
     pdfErrorTitle: "PDF Hatası",
+    printDocument: "Yazdır",
+    processingImage: "Görsel işleniyor...",
     recentScans: "Son Taramalar",
     resolvingDocument: "Belge çözülüyor...",
+    rotatePage: "Döndür",
+    runOcr: "OCR Tara",
+    runningOcr: "OCR metni çıkarılıyor...",
     scannerUnavailableMessage:
       "Bu özellik için native modülü içeren development build gerekir. Şimdilik galeriden foto veya dosya ekleyebilirsin.",
     scannerUnavailableTitle: "Tarayıcı kullanılamıyor",
     scanNewWetSignature: "Yeni Islak İmza Tara",
+    scanModeBook: "Kitap",
+    scanModeDocument: "Belge",
+    scanModeForm: "Form",
+    scanModeIdCard: "Kimlik",
+    scanModeSlide: "Slayt",
+    scanModeWhiteboard: "Tahta",
     searchPlaceholder: "Belgelerde Ara...",
     share: "Paylaş",
+    shareAsCompressedPdf: "Sıkıştırılmış PDF paylaş",
     shareAsJpg: "JPG olarak paylaş",
     shareAsPdf: "PDF olarak paylaş",
     shareAsWord: "Word olarak paylaş",
@@ -138,6 +195,7 @@ const translations = {
       "Şimdilik yalnızca PDF, DOCX ve görsel dosyaları içe aktarabiliyorum.",
     someFilesSkippedTitle: "Bazı Dosyalar Atlandı",
     stay: "Vazgeç",
+    tagsPlaceholder: "Etiketler: fatura, kimlik...",
     tipMessage: "Kamera açıldığında filtre ikonuna basıp 'Renkli' seçin!",
     tipTitle: "İpucu",
     undo: "Geri Al",
@@ -145,6 +203,8 @@ const translations = {
       "Şimdilik PDF, DOCX ve görsel dosyaları ekleyebiliyorum.",
     unsupportedFileTitle: "Desteklenmeyen Dosya",
     uploadDocument: "Belge Yükle",
+    watermark: "Filigran",
+    watermarkPlaceholder: "Filigran metni...",
     wordErrorMessage: "Word belgesi çözümlenemedi.",
     wordErrorTitle: "Word Hatası",
   },
@@ -157,8 +217,10 @@ const translations = {
     all: "All",
     appSubtitle: "Digitize your documents",
     cancel: "Cancel",
+    captureModes: "Capture Modes",
     changeLanguage: "Change language",
     chooseSignature: "Choose Signature",
+    compressedPdf: "Compressed PDF",
     defaultDocumentNamePrefix: "iTech_Document",
     delete: "Delete",
     deleteDocumentMessage: "You cannot undo this action.",
@@ -172,8 +234,14 @@ const translations = {
     exitMessage: "Are you sure you want to exit without saving?",
     exitTitle: "Exit",
     filesTitle: "My Files",
+    filterBlackWhite: "B/W",
+    filterEnhanced: "Enhance",
+    filterGray: "Gray",
     heroSubtitle: "AI-assisted document detection",
     heroTitle: "Start Quick Scan",
+    imageProcessingErrorMessage: "Something went wrong while processing image.",
+    imageProcessingErrorTitle: "Image Error",
+    imageTools: "Image",
     importErrorMessage: "Something went wrong while adding the document.",
     importErrorTitle: "Import Error",
     importImage: "Import Image",
@@ -191,20 +259,40 @@ const translations = {
     noDocumentsFound: "No documents found.",
     noScansYet: "You haven't scanned anything yet.",
     noSignatures: "No signatures yet.",
+    ocrErrorMessage:
+      "Text could not be read. The connection or document clarity may have caused it.",
+    ocrErrorTitle: "OCR Error",
+    ocrHint:
+      "You can extract OCR text automatically or edit it manually here.",
+    ocrLanguage: "OCR Language",
+    ocrPlaceholder: "Text from this page...",
+    ocrText: "OCR Text",
     page: "Page",
     pageDeleted: "Page deleted.",
     pageMoved: "Page moved.",
     pagesAdded: "Pages added.",
     pdfErrorMessage: "PDF could not be parsed.",
     pdfErrorTitle: "PDF Error",
+    printDocument: "Print",
+    processingImage: "Processing image...",
     recentScans: "Recent Scans",
     resolvingDocument: "Resolving document...",
+    rotatePage: "Rotate",
+    runOcr: "Run OCR",
+    runningOcr: "Extracting OCR text...",
     scannerUnavailableMessage:
       "This feature needs a development build that includes the native scanner module. For now, you can add a photo from the gallery or import a file.",
     scannerUnavailableTitle: "Scanner unavailable",
     scanNewWetSignature: "Scan New Wet Signature",
+    scanModeBook: "Book",
+    scanModeDocument: "Document",
+    scanModeForm: "Form",
+    scanModeIdCard: "ID Card",
+    scanModeSlide: "Slide",
+    scanModeWhiteboard: "Whiteboard",
     searchPlaceholder: "Search documents...",
     share: "Share",
+    shareAsCompressedPdf: "Share compressed PDF",
     shareAsJpg: "Share as JPG",
     shareAsPdf: "Share as PDF",
     shareAsWord: "Share as Word",
@@ -213,6 +301,7 @@ const translations = {
       "For now, I can only import PDF, DOCX, and image files.",
     someFilesSkippedTitle: "Some Files Skipped",
     stay: "Stay",
+    tagsPlaceholder: "Tags: invoice, ID...",
     tipMessage: "When the camera opens, tap the filter icon and choose 'Color'.",
     tipTitle: "Tip",
     undo: "Undo",
@@ -220,6 +309,8 @@ const translations = {
       "For now, I can add PDF, DOCX, and image files.",
     unsupportedFileTitle: "Unsupported File",
     uploadDocument: "Upload Document",
+    watermark: "Watermark",
+    watermarkPlaceholder: "Watermark text...",
     wordErrorMessage: "Word document could not be parsed.",
     wordErrorTitle: "Word Error",
   },
@@ -239,6 +330,215 @@ const languageOptions: {
   { code: "tr", title: "Türkçe", subtitle: "Türkçe arayüz" },
   { code: "en", title: "English", subtitle: "English interface" },
 ];
+
+const scanModeOptions: {
+  mode: ScanMode;
+  labelKey: TranslationKey;
+  icon: string;
+}[] = [
+  { mode: "document", labelKey: "scanModeDocument", icon: "document-text-outline" },
+  { mode: "form", labelKey: "scanModeForm", icon: "reader-outline" },
+  { mode: "slide", labelKey: "scanModeSlide", icon: "easel-outline" },
+  { mode: "whiteboard", labelKey: "scanModeWhiteboard", icon: "tablet-landscape-outline" },
+  { mode: "idCard", labelKey: "scanModeIdCard", icon: "id-card-outline" },
+  { mode: "book", labelKey: "scanModeBook", icon: "book-outline" },
+];
+
+const ocrLanguageOptions = [
+  { code: "tur+eng", label: "TR + EN" },
+  { code: "eng", label: "English" },
+  { code: "tur", label: "Türkçe" },
+  { code: "deu", label: "Deutsch" },
+  { code: "fra", label: "Français" },
+  { code: "spa", label: "Español" },
+  { code: "ita", label: "Italiano" },
+  { code: "por", label: "Português" },
+  { code: "nld", label: "Nederlands" },
+  { code: "swe", label: "Svenska" },
+  { code: "nor", label: "Norsk" },
+  { code: "dan", label: "Dansk" },
+  { code: "fin", label: "Suomi" },
+  { code: "pol", label: "Polski" },
+  { code: "ces", label: "Čeština" },
+  { code: "slk", label: "Slovenčina" },
+  { code: "hun", label: "Magyar" },
+  { code: "ron", label: "Română" },
+  { code: "bul", label: "Български" },
+  { code: "ell", label: "Ελληνικά" },
+  { code: "rus", label: "Русский" },
+  { code: "ukr", label: "Українська" },
+  { code: "ara", label: "العربية" },
+  { code: "heb", label: "עברית" },
+  { code: "hin", label: "हिन्दी" },
+  { code: "ben", label: "বাংলা" },
+  { code: "urd", label: "اردو" },
+  { code: "fas", label: "فارسی" },
+  { code: "chi_sim", label: "简体中文" },
+  { code: "chi_tra", label: "繁體中文" },
+  { code: "jpn", label: "日本語" },
+  { code: "kor", label: "한국어" },
+  { code: "tha", label: "ไทย" },
+  { code: "vie", label: "Tiếng Việt" },
+  { code: "ind", label: "Indonesia" },
+  { code: "msa", label: "Melayu" },
+  { code: "fil", label: "Filipino" },
+  { code: "swa", label: "Kiswahili" },
+  { code: "tam", label: "தமிழ்" },
+  { code: "tel", label: "తెలుగు" },
+  { code: "mar", label: "मराठी" },
+  { code: "kan", label: "ಕನ್ನಡ" },
+];
+
+const arraysEqual = (left: string[], right: string[]) =>
+  left.length === right.length &&
+  left.every((item, index) => item === right[index]);
+
+const sanitizeFileName = (fileName: string) =>
+  fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
+
+const getFileNameFromUri = (uri: string, fallbackName: string) => {
+  const path = uri.split("?")[0];
+  const fileName = path.substring(path.lastIndexOf("/") + 1);
+  return sanitizeFileName(decodeURIComponent(fileName || fallbackName));
+};
+
+const fileExists = async (uri: string) => {
+  try {
+    return (await FileSystem.getInfoAsync(uri)).exists;
+  } catch {
+    return false;
+  }
+};
+
+const documentFileUri = (fileName: string) => {
+  if (!FileSystem.documentDirectory) return null;
+  return `${FileSystem.documentDirectory}${fileName}`;
+};
+
+const normalizeFileToDocuments = async (
+  uri: string,
+  fallbackName: string,
+) => {
+  const fileName = getFileNameFromUri(uri, fallbackName);
+  const currentDocumentUri = documentFileUri(fileName);
+
+  if (!currentDocumentUri) {
+    return { uri, fileName, changed: false };
+  }
+
+  if (await fileExists(currentDocumentUri)) {
+    return {
+      uri: currentDocumentUri,
+      fileName,
+      changed: currentDocumentUri !== uri,
+    };
+  }
+
+  if (await fileExists(uri)) {
+    await FileSystem.copyAsync({ from: uri, to: currentDocumentUri });
+    return {
+      uri: currentDocumentUri,
+      fileName,
+      changed: currentDocumentUri !== uri,
+    };
+  }
+
+  return { uri, fileName, changed: false };
+};
+
+const normalizeSavedScan = async (scan: SavedScan) => {
+  const sourcePages = scan.pages?.length ? scan.pages : [scan.uri];
+  const migratedPages: string[] = [];
+  const pageFiles: string[] = [];
+  let changed = false;
+
+  for (let index = 0; index < sourcePages.length; index += 1) {
+    const storedFileName = scan.pageFiles?.[index];
+    const storedFileUri = storedFileName ? documentFileUri(storedFileName) : null;
+
+    if (storedFileName && storedFileUri && (await fileExists(storedFileUri))) {
+      migratedPages.push(storedFileUri);
+      pageFiles.push(storedFileName);
+      changed = changed || storedFileUri !== sourcePages[index];
+      continue;
+    }
+
+    const migrated = await normalizeFileToDocuments(
+      sourcePages[index],
+      `iTech_${scan.id}_${index}.jpg`,
+    );
+    migratedPages.push(migrated.uri);
+    pageFiles.push(migrated.fileName);
+    changed = changed || migrated.changed;
+  }
+
+  const migratedScan = {
+    ...scan,
+    uri: migratedPages[0] || scan.uri,
+    pages: migratedPages,
+    pageFiles,
+  };
+
+  changed =
+    changed ||
+    migratedScan.uri !== scan.uri ||
+    !arraysEqual(scan.pages || [scan.uri], migratedPages) ||
+    !arraysEqual(scan.pageFiles || [], pageFiles);
+
+  return { scan: migratedScan, changed };
+};
+
+const normalizeSavedScans = async (scans: SavedScan[]) => {
+  let changed = false;
+  const normalizedScans = await Promise.all(
+    scans.map(async (scan) => {
+      const normalized = await normalizeSavedScan(scan);
+      changed = changed || normalized.changed;
+      return normalized.scan;
+    }),
+  );
+
+  return { scans: normalizedScans, changed };
+};
+
+const normalizeSavedFileUris = async (
+  uris: string[],
+  fallbackPrefix: string,
+) => {
+  let changed = false;
+  const normalizedUris = await Promise.all(
+    uris.map(async (uri, index) => {
+      const normalized = await normalizeFileToDocuments(
+        uri,
+        `${fallbackPrefix}_${index}.png`,
+      );
+      changed = changed || normalized.changed;
+      return normalized.uri;
+    }),
+  );
+
+  return { uris: normalizedUris, changed };
+};
+
+const alignPageTexts = (texts: string[] | undefined, pageCount: number) =>
+  Array.from({ length: pageCount }, (_, index) => texts?.[index] || "");
+
+const parseTags = (rawTags: string) =>
+  rawTags
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+
+const tagsToInputValue = (tags: string[] | undefined) =>
+  tags?.join(", ") || "";
+
+const escapeHtml = (value: string) =>
+  value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 
 interface PlacedSignature {
   id: string;
@@ -319,15 +619,29 @@ export default function App() {
   const [needsInitialLanguage, setNeedsInitialLanguage] = useState(false);
   const [scannedImagesList, setScannedImagesList] = useState<string[]>([]);
   const [currentPage, setCurrentPage] = useState(0);
+  const [pageTexts, setPageTexts] = useState<string[]>([]);
+  const [selectedScanMode, setSelectedScanMode] =
+    useState<ScanMode>("document");
+  const [documentScanMode, setDocumentScanMode] =
+    useState<ScanMode>("document");
   const [documentName, setDocumentName] = useState("Yeni_Belge");
+  const [documentTags, setDocumentTags] = useState("");
+  const [documentWatermark, setDocumentWatermark] = useState("");
+  const [ocrLanguage, setOcrLanguage] = useState("tur+eng");
+  const [isFavorite, setIsFavorite] = useState(false);
   const [editingDocumentId, setEditingDocumentId] = useState<string | null>(
     null,
   );
   const [isProcessingSignature, setIsProcessingSignature] = useState(false);
+  const [isOcrRunning, setIsOcrRunning] = useState(false);
   const [isCapturing, setIsCapturing] = useState(false);
   const [rawSignatureBase64, setRawSignatureBase64] = useState<string | null>(
     null,
   );
+  const [imageFilterJob, setImageFilterJob] = useState<ImageFilterJob | null>(
+    null,
+  );
+  const [ocrJob, setOcrJob] = useState<OcrJob | null>(null);
   const [pendingImports, setPendingImports] = useState<ImportJob[]>([]);
   const [activeImport, setActiveImport] = useState<ImportJob | null>(null);
   const [isLoadingDocument, setIsLoadingDocument] = useState(false);
@@ -338,6 +652,7 @@ export default function App() {
   const [savedSignatures, setSavedSignatures] = useState<string[]>([]);
   const [isSignModalVisible, setSignModalVisible] = useState(false);
   const [isShareModalVisible, setShareModalVisible] = useState(false);
+  const [isOcrModalVisible, setOcrModalVisible] = useState(false);
   const [isPageAddModalVisible, setPageAddModalVisible] = useState(false);
   const [isPageAddBusy, setIsPageAddBusy] = useState(false);
   const [undoStack, setUndoStack] = useState<EditorSnapshot[]>([]);
@@ -352,11 +667,39 @@ export default function App() {
   );
   const [isAdLoaded, setIsAdLoaded] = useState(false);
   const interstitialRef = useRef<any>(null);
+  const hasInitializedAdsRef = useRef(false);
   const processingImportIdRef = useRef<string | null>(null);
   const t = useCallback(
     (key: TranslationKey) => translations[language][key],
     [language],
   );
+  const currentPageText = pageTexts[currentPage] || "";
+  const isImageToolBusy = Boolean(imageFilterJob) || isOcrRunning || isCapturing;
+
+  const clearEditorMetadata = () => {
+    setPageTexts([]);
+    setDocumentTags("");
+    setDocumentWatermark("");
+    setDocumentScanMode(selectedScanMode);
+    setIsFavorite(false);
+  };
+
+  const getScanModeLabel = (mode: ScanMode | undefined) => {
+    const option =
+      scanModeOptions.find((item) => item.mode === mode) || scanModeOptions[0];
+    return t(option.labelKey);
+  };
+
+  const updateCurrentPageText = (text: string) => {
+    setPageTexts((currentTexts) => {
+      const alignedTexts = alignPageTexts(
+        currentTexts,
+        scannedImagesList.length,
+      );
+      alignedTexts[currentPage] = text;
+      return alignedTexts;
+    });
+  };
 
   const selectLanguage = async (nextLanguage: LanguageCode) => {
     setLanguage(nextLanguage);
@@ -367,12 +710,38 @@ export default function App() {
 
   useEffect(() => {
     loadData();
+  }, []);
+
+  useEffect(() => {
+    if (
+      !isLanguageReady ||
+      needsInitialLanguage ||
+      hasInitializedAdsRef.current
+    ) {
+      return;
+    }
+
+    hasInitializedAdsRef.current = true;
     let isMounted = true;
     let unsubscribeLoaded: (() => void) | undefined;
     let unsubscribeClosed: (() => void) | undefined;
 
+    const requestTrackingPermissionIfNeeded = async () => {
+      if (Platform.OS !== "ios") return;
+
+      try {
+        const permission = await getTrackingPermissionsAsync();
+        if (permission.status === "undetermined" && permission.canAskAgain) {
+          await requestTrackingPermissionsAsync();
+        }
+      } catch (error) {
+        console.warn("App Tracking Transparency request failed.", error);
+      }
+    };
+
     const initializeAds = async () => {
       try {
+        await requestTrackingPermissionIfNeeded();
         const module = await import("react-native-google-mobile-ads");
         await module.default().initialize();
         if (!isMounted) return;
@@ -405,6 +774,7 @@ export default function App() {
         );
         interstitial.load();
       } catch (error) {
+        hasInitializedAdsRef.current = false;
         console.warn("Google Mobile Ads native module is unavailable.", error);
       }
     };
@@ -415,17 +785,40 @@ export default function App() {
       unsubscribeLoaded?.();
       unsubscribeClosed?.();
     };
-  }, []);
+  }, [isLanguageReady, needsInitialLanguage]);
 
   const loadData = async () => {
     try {
       const [storedScans, storedSigs, storedLanguage] = await Promise.all([
-        AsyncStorage.getItem("@itech_scans"),
-        AsyncStorage.getItem("@itech_signatures"),
+        AsyncStorage.getItem(SCANS_STORAGE_KEY),
+        AsyncStorage.getItem(SIGNATURES_STORAGE_KEY),
         AsyncStorage.getItem(LANGUAGE_STORAGE_KEY),
       ]);
-      if (storedScans) setSavedScans(JSON.parse(storedScans));
-      if (storedSigs) setSavedSignatures(JSON.parse(storedSigs));
+      if (storedScans) {
+        const parsedScans = JSON.parse(storedScans) as SavedScan[];
+        const normalized = await normalizeSavedScans(parsedScans);
+        setSavedScans(normalized.scans);
+        if (normalized.changed) {
+          await AsyncStorage.setItem(
+            SCANS_STORAGE_KEY,
+            JSON.stringify(normalized.scans),
+          );
+        }
+      }
+      if (storedSigs) {
+        const parsedSignatures = JSON.parse(storedSigs) as string[];
+        const normalized = await normalizeSavedFileUris(
+          parsedSignatures,
+          "sign",
+        );
+        setSavedSignatures(normalized.uris);
+        if (normalized.changed) {
+          await AsyncStorage.setItem(
+            SIGNATURES_STORAGE_KEY,
+            JSON.stringify(normalized.uris),
+          );
+        }
+      }
       if (isLanguageCode(storedLanguage)) {
         setLanguage(storedLanguage);
       } else {
@@ -500,7 +893,13 @@ export default function App() {
   );
 
   const openSavedScan = (scan: SavedScan) => {
-    setScannedImagesList(scan.pages || [scan.uri]);
+    const pages = scan.pages || [scan.uri];
+    setScannedImagesList(pages);
+    setPageTexts(alignPageTexts(scan.pageTexts, pages.length));
+    setDocumentTags(tagsToInputValue(scan.tags));
+    setDocumentWatermark(scan.watermarkText || "");
+    setDocumentScanMode(scan.scanMode || "document");
+    setIsFavorite(Boolean(scan.isFavorite));
     setCurrentPage(0);
     resetEditorState(scan.title, scan.id);
     setCurrentScreen("editor");
@@ -522,7 +921,7 @@ export default function App() {
             );
             const updated = savedScans.filter((item) => item.id !== scan.id);
             setSavedScans(updated);
-            await AsyncStorage.setItem("@itech_scans", JSON.stringify(updated));
+            await AsyncStorage.setItem(SCANS_STORAGE_KEY, JSON.stringify(updated));
           } catch (e) {
             console.error(e);
           }
@@ -539,6 +938,7 @@ export default function App() {
         style: "destructive",
         onPress: () => {
           setScannedImagesList([]);
+          clearEditorMetadata();
           resetEditorState();
           setCurrentScreen("dashboard");
         },
@@ -595,17 +995,23 @@ export default function App() {
   }, [currentPage, placedSignatures.length, scannedImagesList]);
 
   const rememberUndoState = useCallback(
-    (pages: string[], pageIndex: number, label: string) => {
+    (
+      pages: string[],
+      pageIndex: number,
+      label: string,
+      texts: string[] = pageTexts,
+    ) => {
       setUndoStack((history) => [
         ...history.slice(-19),
         {
           pages: [...pages],
+          pageTexts: alignPageTexts(texts, pages.length),
           currentPage: pageIndex,
           label,
         },
       ]);
     },
-    [],
+    [pageTexts],
   );
 
   const undoLastEditorAction = async () => {
@@ -615,6 +1021,7 @@ export default function App() {
       await bakeCurrentPageIfNeeded();
       const previousState = undoStack[undoStack.length - 1];
       setScannedImagesList(previousState.pages);
+      setPageTexts(alignPageTexts(previousState.pageTexts, previousState.pages.length));
       setCurrentPage(
         Math.min(previousState.currentPage, previousState.pages.length - 1),
       );
@@ -630,14 +1037,29 @@ export default function App() {
     async (pages: string[], append: boolean, defaultName?: string) => {
       if (append && scannedImagesList.length > 0) {
         const committedPages = await bakeCurrentPageIfNeeded();
-        rememberUndoState(committedPages, currentPage, t("pagesAdded"));
+        const committedTexts = alignPageTexts(pageTexts, committedPages.length);
+        rememberUndoState(
+          committedPages,
+          currentPage,
+          t("pagesAdded"),
+          committedTexts,
+        );
         setScannedImagesList([...committedPages, ...pages]);
+        setPageTexts([
+          ...committedTexts,
+          ...Array.from({ length: pages.length }, () => ""),
+        ]);
         setCurrentPage(committedPages.length);
         setCurrentScreen("editor");
         return;
       }
 
       setScannedImagesList(pages);
+      setPageTexts(Array.from({ length: pages.length }, () => ""));
+      setDocumentTags("");
+      setDocumentWatermark("");
+      setDocumentScanMode(selectedScanMode);
+      setIsFavorite(false);
       setCurrentPage(0);
       resetEditorState(defaultName, null);
       setCurrentScreen("editor");
@@ -646,8 +1068,10 @@ export default function App() {
       bakeCurrentPageIfNeeded,
       currentPage,
       rememberUndoState,
+      pageTexts,
       resetEditorState,
       scannedImagesList.length,
+      selectedScanMode,
       t,
     ],
   );
@@ -884,13 +1308,25 @@ export default function App() {
 
     try {
       const committedPages = await bakeCurrentPageIfNeeded();
-      rememberUndoState(committedPages, currentPage, t("pageMoved"));
+      const committedTexts = alignPageTexts(pageTexts, committedPages.length);
+      rememberUndoState(
+        committedPages,
+        currentPage,
+        t("pageMoved"),
+        committedTexts,
+      );
       const updatedPages = [...committedPages];
       [updatedPages[currentPage], updatedPages[targetIndex]] = [
         updatedPages[targetIndex],
         updatedPages[currentPage],
       ];
+      const updatedTexts = [...committedTexts];
+      [updatedTexts[currentPage], updatedTexts[targetIndex]] = [
+        updatedTexts[targetIndex],
+        updatedTexts[currentPage],
+      ];
       setScannedImagesList(updatedPages);
+      setPageTexts(updatedTexts);
       setCurrentPage(targetIndex);
     } catch (e) {
       console.error(e);
@@ -911,11 +1347,24 @@ export default function App() {
         onPress: async () => {
           try {
             const committedPages = await bakeCurrentPageIfNeeded();
-            rememberUndoState(committedPages, currentPage, t("pageDeleted"));
+            const committedTexts = alignPageTexts(
+              pageTexts,
+              committedPages.length,
+            );
+            rememberUndoState(
+              committedPages,
+              currentPage,
+              t("pageDeleted"),
+              committedTexts,
+            );
             const updatedPages = committedPages.filter(
               (_, index) => index !== currentPage,
             );
+            const updatedTexts = committedTexts.filter(
+              (_, index) => index !== currentPage,
+            );
             setScannedImagesList(updatedPages);
+            setPageTexts(updatedTexts);
             setCurrentPage(Math.min(currentPage, updatedPages.length - 1));
           } catch (e) {
             console.error(e);
@@ -923,6 +1372,109 @@ export default function App() {
         },
       },
     ]);
+  };
+
+  const toggleFavoriteScan = async (scanId: string) => {
+    const updated = savedScans.map((scan) =>
+      scan.id === scanId
+        ? { ...scan, isFavorite: !scan.isFavorite }
+        : scan,
+    );
+    setSavedScans(updated);
+    await AsyncStorage.setItem(SCANS_STORAGE_KEY, JSON.stringify(updated));
+  };
+
+  const getFilterLabel = (mode: ImageFilterMode) => {
+    if (mode === "gray") return t("filterGray");
+    if (mode === "blackWhite") return t("filterBlackWhite");
+    return t("filterEnhanced");
+  };
+
+  const rotateCurrentPage = async () => {
+    if (isImageToolBusy) return;
+
+    try {
+      const committedPages = await bakeCurrentPageIfNeeded();
+      const committedTexts = alignPageTexts(pageTexts, committedPages.length);
+      rememberUndoState(
+        committedPages,
+        currentPage,
+        t("rotatePage"),
+        committedTexts,
+      );
+      const rotated = await ImageManipulator.manipulateAsync(
+        committedPages[currentPage],
+        [{ rotate: 90 }],
+        { compress: 0.95, format: ImageManipulator.SaveFormat.JPEG },
+      );
+      const updatedPages = [...committedPages];
+      updatedPages[currentPage] = rotated.uri;
+      setScannedImagesList(updatedPages);
+      setPageTexts(committedTexts);
+    } catch (error) {
+      console.error(error);
+      Alert.alert(
+        t("imageProcessingErrorTitle"),
+        t("imageProcessingErrorMessage"),
+      );
+    }
+  };
+
+  const applyFilterToCurrentPage = async (mode: ImageFilterMode) => {
+    if (isImageToolBusy) return;
+
+    try {
+      const committedPages = await bakeCurrentPageIfNeeded();
+      const committedTexts = alignPageTexts(pageTexts, committedPages.length);
+      rememberUndoState(
+        committedPages,
+        currentPage,
+        getFilterLabel(mode),
+        committedTexts,
+      );
+      setScannedImagesList(committedPages);
+      setPageTexts(committedTexts);
+      const base64 = await FileSystem.readAsStringAsync(
+        committedPages[currentPage],
+        { encoding: "base64" },
+      );
+      setImageFilterJob({
+        id: `${Date.now()}_${mode}`,
+        mode,
+        pageIndex: currentPage,
+        base64,
+      });
+    } catch (error) {
+      console.error(error);
+      Alert.alert(
+        t("imageProcessingErrorTitle"),
+        t("imageProcessingErrorMessage"),
+      );
+    }
+  };
+
+  const runOcrForCurrentPage = async () => {
+    if (isImageToolBusy) return;
+
+    try {
+      const committedPages = await bakeCurrentPageIfNeeded();
+      setScannedImagesList(committedPages);
+      const base64 = await FileSystem.readAsStringAsync(
+        committedPages[currentPage],
+        { encoding: "base64" },
+      );
+      setOcrModalVisible(true);
+      setIsOcrRunning(true);
+      setOcrJob({
+        id: `${Date.now()}_ocr`,
+        pageIndex: currentPage,
+        base64,
+      });
+    } catch (error) {
+      setIsOcrRunning(false);
+      console.error(error);
+      Alert.alert(t("ocrErrorTitle"), t("ocrErrorMessage"));
+    }
   };
 
   const addSignatureToDocument = (uri: string) => {
@@ -952,7 +1504,7 @@ export default function App() {
       );
       const newSigs = [fileUri, ...savedSignatures];
       setSavedSignatures(newSigs);
-      await AsyncStorage.setItem("@itech_signatures", JSON.stringify(newSigs));
+      await AsyncStorage.setItem(SIGNATURES_STORAGE_KEY, JSON.stringify(newSigs));
       addSignatureToDocument(fileUri);
     } catch (e) {
       console.error(e);
@@ -969,7 +1521,7 @@ export default function App() {
           const updated = savedSignatures.filter((uri) => uri !== uriToDelete);
           setSavedSignatures(updated);
           await AsyncStorage.setItem(
-            "@itech_signatures",
+            SIGNATURES_STORAGE_KEY,
             JSON.stringify(updated),
           );
           await FileSystem.deleteAsync(uriToDelete, { idempotent: true });
@@ -999,13 +1551,40 @@ export default function App() {
     });
   };
 
-  const buildPagesHtml = async (pages: string[]) => {
+  const compressPagesForExport = async (pages: string[]) =>
+    Promise.all(
+      pages.map(async (uri) => {
+        const compressed = await ImageManipulator.manipulateAsync(
+          uri,
+          [{ resize: { width: 1240 } }],
+          { compress: 0.65, format: ImageManipulator.SaveFormat.JPEG },
+        );
+        return compressed.uri;
+      }),
+    );
+
+  const buildPagesHtml = async (
+    pages: string[],
+    options?: { watermark?: string; texts?: string[] },
+  ) => {
+    const watermark = options?.watermark?.trim() || "";
+    const watermarkHtml = escapeHtml(watermark);
+    const alignedTexts = alignPageTexts(options?.texts, pages.length);
     let html = `<html><body style="margin:0; background:#fff;">`;
-    for (const uri of pages) {
+    for (let index = 0; index < pages.length; index += 1) {
+      const uri = pages[index];
       const b64 = await FileSystem.readAsStringAsync(uri, {
         encoding: "base64",
       });
-      html += `<img src="data:image/jpeg;base64,${b64}" style="width:100vw;height:100vh;object-fit:contain;page-break-after:always;"/>`;
+      html += `<div style="position:relative;width:100vw;height:100vh;page-break-after:always;background:#fff;overflow:hidden;">
+        <img src="data:image/jpeg;base64,${b64}" style="width:100%;height:100%;object-fit:contain;"/>
+        ${
+          watermark
+            ? `<div style="position:absolute;left:0;right:0;top:46%;text-align:center;font-size:46px;font-weight:800;color:rgba(15,23,42,0.16);transform:rotate(-24deg);letter-spacing:2px;">${watermarkHtml}</div>`
+            : ""
+        }
+        <div style="position:absolute;left:0;top:0;opacity:0.01;font-size:1px;color:#fff;">${escapeHtml(alignedTexts[index])}</div>
+      </div>`;
     }
     return html + `</body></html>`;
   };
@@ -1018,16 +1597,32 @@ export default function App() {
         const finalPages = await bakeCurrentPageIfNeeded();
         let tempUri = finalPages[currentPage];
         const safeName = documentName.replace(/[^a-zA-Z0-9]/g, "_");
-        const extension = format === "word" ? "doc" : format;
+        const isCompressedPdf = format === "pdfCompressed";
+        const extension =
+          format === "word" ? "doc" : isCompressedPdf ? "pdf" : format;
+        const exportPages = isCompressedPdf
+          ? await compressPagesForExport(finalPages)
+          : finalPages;
+        const htmlOptions = {
+          watermark: documentWatermark,
+          texts: pageTexts,
+        };
 
-        if (format === "pdf") {
-          const html = await buildPagesHtml(finalPages);
+        if (format === "print") {
+          const html = await buildPagesHtml(exportPages, htmlOptions);
+          setIsCapturing(false);
+          await Print.printAsync({ html });
+          return;
+        }
+
+        if (format === "pdf" || format === "pdfCompressed") {
+          const html = await buildPagesHtml(exportPages, htmlOptions);
           const { uri } = await Print.printToFileAsync({
             html,
           });
           tempUri = uri;
         } else if (format === "word") {
-          const html = await buildPagesHtml(finalPages);
+          const html = await buildPagesHtml(exportPages, htmlOptions);
           tempUri = FileSystem.cacheDirectory + `${safeName}.doc`;
           await FileSystem.writeAsStringAsync(tempUri, html, {
             encoding: "utf8",
@@ -1052,14 +1647,26 @@ export default function App() {
     setTimeout(async () => {
       try {
         const finalPages = await bakeCurrentPageIfNeeded();
-        const permanentUris = await Promise.all(
+        const savedAt = Date.now();
+        const permanentPages = await Promise.all(
           finalPages.map(async (uri, index) => {
-            const permUri =
-              FileSystem.documentDirectory + `iTech_${Date.now()}_${index}.jpg`;
+            const fileName = `iTech_${savedAt}_${index}.jpg`;
+            const permUri = documentFileUri(fileName);
+            if (!permUri) {
+              return {
+                uri,
+                fileName: getFileNameFromUri(uri, fileName),
+              };
+            }
             await FileSystem.copyAsync({ from: uri, to: permUri });
-            return permUri;
+            return { uri: permUri, fileName };
           }),
         );
+        const permanentUris = permanentPages.map((page) => page.uri);
+        const pageFiles = permanentPages.map((page) => page.fileName);
+        const finalPageTexts = alignPageTexts(pageTexts, permanentUris.length);
+        const finalTags = parseTags(documentTags);
+        const finalWatermark = documentWatermark.trim();
         let updated = [...savedScans];
         if (editingDocumentId) {
           const idx = updated.findIndex((s) => s.id === editingDocumentId);
@@ -1069,24 +1676,37 @@ export default function App() {
               title: documentName,
               uri: permanentUris[0],
               pages: permanentUris,
+              pageFiles,
+              pageTexts: finalPageTexts,
+              tags: finalTags,
+              isFavorite,
+              scanMode: documentScanMode,
+              watermarkText: finalWatermark,
             };
         } else {
           updated = [
             {
-              id: Date.now().toString(),
+              id: savedAt.toString(),
               title: documentName,
               date: new Date().toLocaleDateString(
                 language === "tr" ? "tr-TR" : "en-US",
               ),
               uri: permanentUris[0],
               pages: permanentUris,
+              pageFiles,
+              pageTexts: finalPageTexts,
+              tags: finalTags,
+              isFavorite,
+              scanMode: documentScanMode,
+              watermarkText: finalWatermark,
             },
             ...updated,
           ];
         }
-        await AsyncStorage.setItem("@itech_scans", JSON.stringify(updated));
+        await AsyncStorage.setItem(SCANS_STORAGE_KEY, JSON.stringify(updated));
         setSavedScans(updated);
         setScannedImagesList([]);
+        clearEditorMetadata();
         resetEditorState();
         setCurrentScreen("dashboard");
         setIsCapturing(false);
@@ -1163,6 +1783,38 @@ export default function App() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: 160 }}
       >
+        <View style={styles.captureModeSection}>
+          <Text style={styles.captureModeTitle}>{t("captureModes")}</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            {scanModeOptions.map((option) => {
+              const isSelected = selectedScanMode === option.mode;
+              return (
+                <TouchableOpacity
+                  key={option.mode}
+                  style={[
+                    styles.captureModeChip,
+                    isSelected && styles.captureModeChipActive,
+                  ]}
+                  onPress={() => setSelectedScanMode(option.mode)}
+                >
+                  <Ionicons
+                    name={option.icon as any}
+                    size={18}
+                    color={isSelected ? "#fff" : "#94a3b8"}
+                  />
+                  <Text
+                    style={[
+                      styles.captureModeText,
+                      isSelected && styles.captureModeTextActive,
+                    ]}
+                  >
+                    {t(option.labelKey)}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+        </View>
         <TouchableOpacity
           style={styles.heroCard}
           onPress={() => scanDocument(false)}
@@ -1174,7 +1826,9 @@ export default function App() {
             </View>
             <View>
               <Text style={styles.heroTitle}>{t("heroTitle")}</Text>
-              <Text style={styles.heroSubtitle}>{t("heroSubtitle")}</Text>
+              <Text style={styles.heroSubtitle}>
+                {t("heroSubtitle")} - {getScanModeLabel(selectedScanMode)}
+              </Text>
             </View>
           </View>
           <Ionicons
@@ -1280,9 +1934,26 @@ export default function App() {
   );
 
   const renderFilesScreen = () => {
-    const filtered = savedScans.filter((s) =>
-      s.title.toLowerCase().includes(searchQuery.toLowerCase()),
-    );
+    const query = searchQuery.trim().toLowerCase();
+    const filtered = savedScans
+      .filter((scan) => {
+        if (!query) return true;
+
+        const searchable = [
+          scan.title,
+          scan.date,
+          getScanModeLabel(scan.scanMode),
+          scan.watermarkText || "",
+          ...(scan.tags || []),
+          ...(scan.pageTexts || []),
+        ]
+          .join(" ")
+          .toLowerCase();
+
+        return searchable.includes(query);
+      })
+      .sort((left, right) => Number(right.isFavorite) - Number(left.isFavorite));
+
     return (
       <View style={styles.dashboardContainer}>
         <View style={styles.filesHeader}>
@@ -1344,7 +2015,31 @@ export default function App() {
                     <Text style={styles.gridTitle} numberOfLines={1}>
                       {item.title}
                     </Text>
-                    <Text style={styles.gridDate}>{item.date}</Text>
+                    <View style={styles.scanMetaRow}>
+                      <Text style={styles.gridDate}>{item.date}</Text>
+                      {item.pageTexts?.some(Boolean) && (
+                        <View style={styles.ocrBadge}>
+                          <Text style={styles.ocrBadgeText}>OCR</Text>
+                        </View>
+                      )}
+                    </View>
+                    <View style={styles.scanMetaRow}>
+                      <Text style={styles.gridDate} numberOfLines={1}>
+                        {[getScanModeLabel(item.scanMode), ...(item.tags || [])]
+                          .slice(0, 2)
+                          .join(", ")}
+                      </Text>
+                      <TouchableOpacity
+                        style={styles.favoriteCardBtn}
+                        onPress={() => toggleFavoriteScan(item.id)}
+                      >
+                        <Ionicons
+                          name={item.isFavorite ? "star" : "star-outline"}
+                          size={18}
+                          color={item.isFavorite ? "#facc15" : "#64748b"}
+                        />
+                      </TouchableOpacity>
+                    </View>
                   </TouchableOpacity>
                 ) : (
                   <TouchableOpacity
@@ -1365,8 +2060,31 @@ export default function App() {
                     </View>
                     <View style={styles.recentInfo}>
                       <Text style={styles.recentDocTitle}>{item.title}</Text>
-                      <Text style={styles.recentDocDate}>{item.date}</Text>
+                      <View style={styles.scanMetaRow}>
+                        <Text style={styles.recentDocDate}>{item.date}</Text>
+                        {item.pageTexts?.some(Boolean) && (
+                          <View style={styles.ocrBadge}>
+                            <Text style={styles.ocrBadgeText}>OCR</Text>
+                          </View>
+                        )}
+                      </View>
+                      <Text style={styles.scanTagsText} numberOfLines={1}>
+                        {[
+                          getScanModeLabel(item.scanMode),
+                          ...(item.tags || []),
+                        ].join(", ")}
+                      </Text>
                     </View>
+                    <TouchableOpacity
+                      style={styles.moreBtn}
+                      onPress={() => toggleFavoriteScan(item.id)}
+                    >
+                      <Ionicons
+                        name={item.isFavorite ? "star" : "star-outline"}
+                        size={23}
+                        color={item.isFavorite ? "#facc15" : "#64748b"}
+                      />
+                    </TouchableOpacity>
                     <TouchableOpacity
                       style={styles.moreBtn}
                       onPress={() => deleteScan(item)}
@@ -1422,6 +2140,43 @@ export default function App() {
         >
           <Text style={styles.saveHeaderText}>{t("done")}</Text>
         </TouchableOpacity>
+      </View>
+      <View style={styles.metadataBar}>
+        <TouchableOpacity
+          style={[
+            styles.favoriteMetaButton,
+            isFavorite && styles.favoriteMetaButtonActive,
+          ]}
+          onPress={() => setIsFavorite((value) => !value)}
+        >
+          <Ionicons
+            name={isFavorite ? "star" : "star-outline"}
+            size={20}
+            color={isFavorite ? "#facc15" : "#94a3b8"}
+          />
+        </TouchableOpacity>
+        <TextInput
+          style={styles.tagsInput}
+          placeholder={t("tagsPlaceholder")}
+          placeholderTextColor="#64748b"
+          value={documentTags}
+          onChangeText={setDocumentTags}
+        />
+      </View>
+      <View style={styles.editorMetaSecondary}>
+        <View style={styles.scanModePill}>
+          <Ionicons name="scan-outline" size={16} color="#a5b4fc" />
+          <Text style={styles.scanModePillText}>
+            {getScanModeLabel(documentScanMode)}
+          </Text>
+        </View>
+        <TextInput
+          style={styles.watermarkInput}
+          placeholder={t("watermarkPlaceholder")}
+          placeholderTextColor="#64748b"
+          value={documentWatermark}
+          onChangeText={setDocumentWatermark}
+        />
       </View>
       {scannedImagesList.length > 1 && (
         <View style={styles.pageNavigator}>
@@ -1497,6 +2252,69 @@ export default function App() {
           <Text style={styles.pageToolText}>{t("delete")}</Text>
         </TouchableOpacity>
       </View>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.imageToolsScroll}
+        contentContainerStyle={styles.imageToolsContent}
+      >
+        <Text style={styles.imageToolsTitle}>{t("imageTools")}</Text>
+        <TouchableOpacity
+          style={[
+            styles.imageToolChip,
+            isImageToolBusy && styles.imageToolChipDisabled,
+          ]}
+          disabled={isImageToolBusy}
+          onPress={rotateCurrentPage}
+        >
+          <Ionicons name="refresh-outline" size={18} color="#fff" />
+          <Text style={styles.imageToolText}>{t("rotatePage")}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[
+            styles.imageToolChip,
+            isImageToolBusy && styles.imageToolChipDisabled,
+          ]}
+          disabled={isImageToolBusy}
+          onPress={() => applyFilterToCurrentPage("gray")}
+        >
+          <Ionicons name="contrast-outline" size={18} color="#fff" />
+          <Text style={styles.imageToolText}>{t("filterGray")}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[
+            styles.imageToolChip,
+            isImageToolBusy && styles.imageToolChipDisabled,
+          ]}
+          disabled={isImageToolBusy}
+          onPress={() => applyFilterToCurrentPage("blackWhite")}
+        >
+          <Ionicons name="barcode-outline" size={18} color="#fff" />
+          <Text style={styles.imageToolText}>{t("filterBlackWhite")}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[
+            styles.imageToolChip,
+            isImageToolBusy && styles.imageToolChipDisabled,
+          ]}
+          disabled={isImageToolBusy}
+          onPress={() => applyFilterToCurrentPage("enhance")}
+        >
+          <Ionicons name="sparkles-outline" size={18} color="#fff" />
+          <Text style={styles.imageToolText}>{t("filterEnhanced")}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[
+            styles.imageToolChip,
+            isImageToolBusy && styles.imageToolChipDisabled,
+          ]}
+          disabled={isImageToolBusy}
+          onPress={() => setOcrModalVisible(true)}
+        >
+          <Ionicons name="text-outline" size={18} color="#fff" />
+          <Text style={styles.imageToolText}>{t("ocrText")}</Text>
+        </TouchableOpacity>
+      </ScrollView>
       {undoStack.length > 0 && (
         <View style={styles.undoBar}>
           <Text style={styles.undoText}>
@@ -1549,6 +2367,11 @@ export default function App() {
                 style={styles.documentImage}
                 source={{ uri: scannedImagesList[currentPage] }}
               >
+                {documentWatermark.trim().length > 0 && !isCapturing && (
+                  <Text style={styles.watermarkPreviewText}>
+                    {documentWatermark.trim()}
+                  </Text>
+                )}
                 {placedSignatures.map((sign) => (
                   <DraggableSignature
                     key={sign.id}
@@ -1723,10 +2546,116 @@ export default function App() {
                 isCapturing && styles.pageAddActionDisabled,
               ]}
               disabled={isCapturing}
+              onPress={() => runShareAction("pdfCompressed")}
+            >
+              <Ionicons name="archive-outline" size={22} color="#fff" />
+              <Text style={styles.pageAddActionText}>
+                {t("shareAsCompressedPdf")}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.pageAddAction,
+                isCapturing && styles.pageAddActionDisabled,
+              ]}
+              disabled={isCapturing}
               onPress={() => runShareAction("word")}
             >
               <Ionicons name="document-outline" size={22} color="#fff" />
               <Text style={styles.pageAddActionText}>{t("shareAsWord")}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.pageAddAction,
+                isCapturing && styles.pageAddActionDisabled,
+              ]}
+              disabled={isCapturing}
+              onPress={() => runShareAction("print")}
+            >
+              <Ionicons name="print-outline" size={22} color="#fff" />
+              <Text style={styles.pageAddActionText}>{t("printDocument")}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+      <Modal
+        visible={isOcrModalVisible}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => {
+          if (!isOcrRunning) setOcrModalVisible(false);
+        }}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <View>
+                <Text style={styles.modalTitle}>{t("ocrText")}</Text>
+                <Text style={styles.modalHint}>
+                  {t("page")} {currentPage + 1} / {scannedImagesList.length}
+                </Text>
+              </View>
+              <TouchableOpacity
+                disabled={isOcrRunning}
+                onPress={() => setOcrModalVisible(false)}
+              >
+                <Ionicons name="close-circle" size={28} color="#475569" />
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.modalHint}>{t("ocrHint")}</Text>
+            <Text style={styles.modalSectionLabel}>{t("ocrLanguage")}</Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={styles.ocrLanguageScroll}
+              contentContainerStyle={styles.ocrLanguageContent}
+            >
+              {ocrLanguageOptions.map((option) => {
+                const isSelected = ocrLanguage === option.code;
+                return (
+                  <TouchableOpacity
+                    key={option.code}
+                    style={[
+                      styles.ocrLanguageChip,
+                      isSelected && styles.ocrLanguageChipActive,
+                    ]}
+                    onPress={() => setOcrLanguage(option.code)}
+                  >
+                    <Text
+                      style={[
+                        styles.ocrLanguageText,
+                        isSelected && styles.ocrLanguageTextActive,
+                      ]}
+                    >
+                      {option.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+            <TextInput
+              style={styles.ocrTextInput}
+              multiline
+              textAlignVertical="top"
+              placeholder={t("ocrPlaceholder")}
+              placeholderTextColor="#64748b"
+              value={currentPageText}
+              onChangeText={updateCurrentPageText}
+            />
+            <TouchableOpacity
+              style={[
+                styles.pageAddAction,
+                isImageToolBusy && styles.pageAddActionDisabled,
+              ]}
+              disabled={isImageToolBusy}
+              onPress={runOcrForCurrentPage}
+            >
+              {isOcrRunning ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Ionicons name="scan-outline" size={22} color="#fff" />
+              )}
+              <Text style={styles.pageAddActionText}>{t("runOcr")}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -1882,6 +2811,148 @@ export default function App() {
           }}
         />
       </View>
+      {imageFilterJob && (
+        <View style={styles.hiddenWebView}>
+          <WebView
+            originWhitelist={["*"]}
+            onMessage={async (e) => {
+              try {
+                const parsed = JSON.parse(e.nativeEvent.data);
+                if (parsed.type === "image_filter") {
+                  const uri =
+                    FileSystem.cacheDirectory +
+                    `filter_${imageFilterJob.id}.jpg`;
+                  await FileSystem.writeAsStringAsync(
+                    uri,
+                    parsed.base64.split(",")[1],
+                    { encoding: "base64" },
+                  );
+                  setScannedImagesList((currentPages) => {
+                    const updatedPages = [...currentPages];
+                    updatedPages[parsed.pageIndex] = uri;
+                    return updatedPages;
+                  });
+                } else if (parsed.type === "import_error") {
+                  Alert.alert(
+                    t("imageProcessingErrorTitle"),
+                    parsed.message || t("imageProcessingErrorMessage"),
+                  );
+                }
+              } catch (error) {
+                console.error(error);
+                Alert.alert(
+                  t("imageProcessingErrorTitle"),
+                  t("imageProcessingErrorMessage"),
+                );
+              } finally {
+                setImageFilterJob(null);
+              }
+            }}
+            source={{
+              html: `<html><body style="margin:0;"><canvas id="c"></canvas><script>
+                  function clamp(value) { return Math.max(0, Math.min(255, value)); }
+                  var mode = '${imageFilterJob.mode}';
+                  var img = new Image();
+                  img.onload = function() {
+                    var canvas = document.getElementById('c');
+                    var ctx = canvas.getContext('2d');
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    ctx.drawImage(img, 0, 0);
+                    var imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                    var data = imgData.data;
+                    for (var i = 0; i < data.length; i += 4) {
+                      var r = data[i], g = data[i + 1], b = data[i + 2];
+                      var gray = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+                      if (mode === 'gray') {
+                        data[i] = gray;
+                        data[i + 1] = gray;
+                        data[i + 2] = gray;
+                      } else if (mode === 'blackWhite') {
+                        var bw = gray > 168 ? 255 : 0;
+                        data[i] = bw;
+                        data[i + 1] = bw;
+                        data[i + 2] = bw;
+                      } else {
+                        var factor = 1.35;
+                        data[i] = clamp((r - 128) * factor + 142);
+                        data[i + 1] = clamp((g - 128) * factor + 142);
+                        data[i + 2] = clamp((b - 128) * factor + 142);
+                        if (gray > 218) {
+                          data[i] = 255;
+                          data[i + 1] = 255;
+                          data[i + 2] = 255;
+                        }
+                      }
+                    }
+                    ctx.putImageData(imgData, 0, 0);
+                    window.ReactNativeWebView.postMessage(JSON.stringify({
+                      type: 'image_filter',
+                      pageIndex: ${imageFilterJob.pageIndex},
+                      base64: canvas.toDataURL('image/jpeg', 0.92)
+                    }));
+                  };
+                  img.onerror = function(error) {
+                    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'import_error', message: String(error) }));
+                  };
+                  img.src = 'data:image/jpeg;base64,${imageFilterJob.base64}';
+                </script></body></html>`,
+            }}
+          />
+        </View>
+      )}
+      {ocrJob && (
+        <View style={styles.hiddenWebView}>
+          <WebView
+            originWhitelist={["*"]}
+            onMessage={(e) => {
+              try {
+                const parsed = JSON.parse(e.nativeEvent.data);
+                if (parsed.type === "ocr_result") {
+                  setPageTexts((currentTexts) => {
+                    const updatedTexts = alignPageTexts(
+                      currentTexts,
+                      scannedImagesList.length,
+                    );
+                    updatedTexts[parsed.pageIndex] = parsed.text?.trim?.() || "";
+                    return updatedTexts;
+                  });
+                } else if (parsed.type === "import_error") {
+                  Alert.alert(
+                    t("ocrErrorTitle"),
+                    parsed.message || t("ocrErrorMessage"),
+                  );
+                }
+              } catch (error) {
+                console.error(error);
+                Alert.alert(t("ocrErrorTitle"), t("ocrErrorMessage"));
+              } finally {
+                setIsOcrRunning(false);
+                setOcrJob(null);
+              }
+            }}
+            source={{
+              html: `<html><body style="margin:0;"><script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script><script>
+                  (async function() {
+                    try {
+                      var result = await Tesseract.recognize(
+                        'data:image/jpeg;base64,${ocrJob.base64}',
+                        '${ocrLanguage}'
+                      );
+                      window.ReactNativeWebView.postMessage(JSON.stringify({
+                        type: 'ocr_result',
+                        pageIndex: ${ocrJob.pageIndex},
+                        text: result && result.data ? result.data.text : ''
+                      }));
+                    } catch (error) {
+                      window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'import_error', message: String(error) }));
+                    }
+                  })();
+                </script></body></html>`,
+            }}
+          />
+        </View>
+      )}
       {activeImport?.kind === "pdf" && activeImport.base64 && (
         <View style={styles.hiddenWebView}>
           <WebView
@@ -2065,10 +3136,16 @@ export default function App() {
           />
         </View>
       )}
-      {isLoadingDocument && (
+      {(isLoadingDocument || imageFilterJob || isOcrRunning) && (
         <View style={styles.loadingOverlay}>
           <ActivityIndicator size="large" color="#6366f1" />
-          <Text style={styles.loadingText}>{t("resolvingDocument")}</Text>
+          <Text style={styles.loadingText}>
+            {isOcrRunning
+              ? t("runningOcr")
+              : imageFilterJob
+                ? t("processingImage")
+                : t("resolvingDocument")}
+          </Text>
         </View>
       )}
       {currentScreen === "dashboard" && renderDashboard()}
@@ -2134,6 +3211,38 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     marginBottom: 15,
   },
+  captureModeSection: {
+    marginBottom: 16,
+    paddingLeft: 20,
+  },
+  captureModeTitle: {
+    color: "#cbd5e1",
+    fontSize: 13,
+    fontWeight: "700",
+    marginBottom: 10,
+  },
+  captureModeChip: {
+    minHeight: 40,
+    borderRadius: 20,
+    backgroundColor: "#1e293b",
+    borderWidth: 1,
+    borderColor: "#334155",
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    marginRight: 8,
+    gap: 6,
+  },
+  captureModeChipActive: {
+    backgroundColor: "#6366f1",
+    borderColor: "#818cf8",
+  },
+  captureModeText: {
+    color: "#94a3b8",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  captureModeTextActive: { color: "#fff" },
   toolsScroll: { paddingLeft: 20 },
   toolChip: {
     backgroundColor: "#1e293b",
@@ -2265,6 +3374,35 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   gridDate: { color: "#64748b", fontSize: 11 },
+  scanMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  scanTagsText: {
+    color: "#94a3b8",
+    fontSize: 11,
+    marginTop: 4,
+  },
+  ocrBadge: {
+    backgroundColor: "rgba(99, 102, 241, 0.18)",
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  ocrBadgeText: {
+    color: "#a5b4fc",
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  favoriteCardBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   editorContainer: { flex: 1, backgroundColor: "#0f172a" },
   editorHeader: {
     flexDirection: "row",
@@ -2290,6 +3428,72 @@ const styles = StyleSheet.create({
     padding: 0,
     margin: 0,
     minWidth: 100,
+  },
+  metadataBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 15,
+    paddingBottom: 10,
+  },
+  favoriteMetaButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    backgroundColor: "#1e293b",
+    borderWidth: 1,
+    borderColor: "#334155",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  favoriteMetaButtonActive: {
+    borderColor: "#facc15",
+    backgroundColor: "rgba(250, 204, 21, 0.12)",
+  },
+  tagsInput: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 12,
+    backgroundColor: "#1e293b",
+    borderWidth: 1,
+    borderColor: "#334155",
+    color: "#f8fafc",
+    paddingHorizontal: 12,
+    fontSize: 13,
+  },
+  editorMetaSecondary: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 15,
+    paddingBottom: 10,
+  },
+  scanModePill: {
+    minHeight: 38,
+    borderRadius: 12,
+    backgroundColor: "rgba(99, 102, 241, 0.16)",
+    borderWidth: 1,
+    borderColor: "#4338ca",
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 10,
+    gap: 6,
+  },
+  scanModePillText: {
+    color: "#c7d2fe",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  watermarkInput: {
+    flex: 1,
+    minHeight: 38,
+    borderRadius: 12,
+    backgroundColor: "#1e293b",
+    borderWidth: 1,
+    borderColor: "#334155",
+    color: "#f8fafc",
+    paddingHorizontal: 12,
+    fontSize: 13,
   },
   saveHeaderButton: {
     backgroundColor: "#10b981",
@@ -2335,6 +3539,39 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 11,
     fontWeight: "600",
+  },
+  imageToolsScroll: {
+    maxHeight: 54,
+    backgroundColor: "#0f172a",
+  },
+  imageToolsContent: {
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingBottom: 10,
+  },
+  imageToolsTitle: {
+    color: "#94a3b8",
+    fontSize: 12,
+    fontWeight: "700",
+    marginRight: 2,
+  },
+  imageToolChip: {
+    minHeight: 38,
+    borderRadius: 19,
+    backgroundColor: "#1e293b",
+    borderWidth: 1,
+    borderColor: "#334155",
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    gap: 6,
+  },
+  imageToolChipDisabled: { opacity: 0.45 },
+  imageToolText: {
+    color: "#f8fafc",
+    fontSize: 12,
+    fontWeight: "700",
   },
   undoBar: {
     marginHorizontal: 12,
@@ -2415,6 +3652,18 @@ const styles = StyleSheet.create({
     elevation: 5,
   },
   documentImage: { width: "100%", height: "100%" },
+  watermarkPreviewText: {
+    position: "absolute",
+    left: 20,
+    right: 20,
+    top: "45%",
+    textAlign: "center",
+    color: "rgba(15, 23, 42, 0.2)",
+    fontSize: 34,
+    fontWeight: "900",
+    transform: [{ rotate: "-24deg" }],
+    letterSpacing: 2,
+  },
   signatureWrapper: { position: "absolute", padding: 2 },
   activeSignature: {
     borderWidth: 2,
@@ -2511,6 +3760,59 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
   modalTitle: { color: "#f8fafc", fontSize: 18, fontWeight: "bold" },
+  modalHint: {
+    color: "#94a3b8",
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 4,
+    marginBottom: 12,
+  },
+  modalSectionLabel: {
+    color: "#cbd5e1",
+    fontSize: 12,
+    fontWeight: "800",
+    marginBottom: 8,
+  },
+  ocrLanguageScroll: {
+    maxHeight: 44,
+    marginBottom: 12,
+  },
+  ocrLanguageContent: {
+    gap: 8,
+    paddingRight: 20,
+  },
+  ocrLanguageChip: {
+    minHeight: 36,
+    borderRadius: 18,
+    backgroundColor: "#0f172a",
+    borderWidth: 1,
+    borderColor: "#334155",
+    justifyContent: "center",
+    paddingHorizontal: 12,
+  },
+  ocrLanguageChipActive: {
+    backgroundColor: "#6366f1",
+    borderColor: "#818cf8",
+  },
+  ocrLanguageText: {
+    color: "#94a3b8",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  ocrLanguageTextActive: { color: "#fff" },
+  ocrTextInput: {
+    minHeight: 170,
+    maxHeight: 260,
+    borderRadius: 14,
+    backgroundColor: "#0f172a",
+    borderWidth: 1,
+    borderColor: "#334155",
+    color: "#f8fafc",
+    fontSize: 14,
+    lineHeight: 20,
+    padding: 14,
+    marginBottom: 14,
+  },
   savedSignsScroll: { marginBottom: 20 },
   savedSignWrapper: { marginRight: 15, position: "relative" },
   savedSignCard: {
