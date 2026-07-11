@@ -4,7 +4,7 @@
     "slug": "CameraScanner",
     "version": "1.2.3",
     "orientation": "portrait",
-    "icon": "./assets/images/ITECH.png",
+    "icon": "./assets/images/iconw.png",
     "scheme": "camerascanner",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
