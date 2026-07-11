@@ -53,7 +53,13 @@ interface SavedScan {
 type ImportKind = "pdf" | "docx" | "image";
 type ShareFormat = "jpg" | "pdf" | "pdfCompressed" | "word" | "print";
 type ImageFilterMode = "gray" | "blackWhite" | "enhance";
-type ScanMode = "document" | "form" | "slide" | "whiteboard" | "idCard" | "book";
+type ScanMode =
+  | "document"
+  | "form"
+  | "slide"
+  | "whiteboard"
+  | "idCard"
+  | "book";
 
 interface ImportJob {
   id: string;
@@ -207,6 +213,8 @@ const translations = {
     watermarkPlaceholder: "Filigran metni...",
     wordErrorMessage: "Word belgesi çözümlenemedi.",
     wordErrorTitle: "Word Hatası",
+    titlepone: "Belgelerinizi",
+    titleptwo: "Tarayın",
   },
   en: {
     addFromGallery: "Add from gallery",
@@ -262,8 +270,7 @@ const translations = {
     ocrErrorMessage:
       "Text could not be read. The connection or document clarity may have caused it.",
     ocrErrorTitle: "OCR Error",
-    ocrHint:
-      "You can extract OCR text automatically or edit it manually here.",
+    ocrHint: "You can extract OCR text automatically or edit it manually here.",
     ocrLanguage: "OCR Language",
     ocrPlaceholder: "Text from this page...",
     ocrText: "OCR Text",
@@ -302,17 +309,19 @@ const translations = {
     someFilesSkippedTitle: "Some Files Skipped",
     stay: "Stay",
     tagsPlaceholder: "Tags: invoice, ID...",
-    tipMessage: "When the camera opens, tap the filter icon and choose 'Color'.",
+    tipMessage:
+      "When the camera opens, tap the filter icon and choose 'Color'.",
     tipTitle: "Tip",
     undo: "Undo",
-    unsupportedFileMessage:
-      "For now, I can add PDF, DOCX, and image files.",
+    unsupportedFileMessage: "For now, I can add PDF, DOCX, and image files.",
     unsupportedFileTitle: "Unsupported File",
     uploadDocument: "Upload Document",
     watermark: "Watermark",
     watermarkPlaceholder: "Watermark text...",
     wordErrorMessage: "Word document could not be parsed.",
     wordErrorTitle: "Word Error",
+    titlepone: "Scan Your",
+    titleptwo: "Documents",
   },
 } as const;
 
@@ -336,10 +345,18 @@ const scanModeOptions: {
   labelKey: TranslationKey;
   icon: string;
 }[] = [
-  { mode: "document", labelKey: "scanModeDocument", icon: "document-text-outline" },
+  {
+    mode: "document",
+    labelKey: "scanModeDocument",
+    icon: "document-text-outline",
+  },
   { mode: "form", labelKey: "scanModeForm", icon: "reader-outline" },
   { mode: "slide", labelKey: "scanModeSlide", icon: "easel-outline" },
-  { mode: "whiteboard", labelKey: "scanModeWhiteboard", icon: "tablet-landscape-outline" },
+  {
+    mode: "whiteboard",
+    labelKey: "scanModeWhiteboard",
+    icon: "tablet-landscape-outline",
+  },
   { mode: "idCard", labelKey: "scanModeIdCard", icon: "id-card-outline" },
   { mode: "book", labelKey: "scanModeBook", icon: "book-outline" },
 ];
@@ -415,10 +432,7 @@ const documentFileUri = (fileName: string) => {
   return `${FileSystem.documentDirectory}${fileName}`;
 };
 
-const normalizeFileToDocuments = async (
-  uri: string,
-  fallbackName: string,
-) => {
+const normalizeFileToDocuments = async (uri: string, fallbackName: string) => {
   const fileName = getFileNameFromUri(uri, fallbackName);
   const currentDocumentUri = documentFileUri(fileName);
 
@@ -454,7 +468,9 @@ const normalizeSavedScan = async (scan: SavedScan) => {
 
   for (let index = 0; index < sourcePages.length; index += 1) {
     const storedFileName = scan.pageFiles?.[index];
-    const storedFileUri = storedFileName ? documentFileUri(storedFileName) : null;
+    const storedFileUri = storedFileName
+      ? documentFileUri(storedFileName)
+      : null;
 
     if (storedFileName && storedFileUri && (await fileExists(storedFileUri))) {
       migratedPages.push(storedFileUri);
@@ -529,8 +545,7 @@ const parseTags = (rawTags: string) =>
     .map((tag) => tag.trim())
     .filter(Boolean);
 
-const tagsToInputValue = (tags: string[] | undefined) =>
-  tags?.join(", ") || "";
+const tagsToInputValue = (tags: string[] | undefined) => tags?.join(", ") || "";
 
 const escapeHtml = (value: string) =>
   value
@@ -674,7 +689,8 @@ export default function App() {
     [language],
   );
   const currentPageText = pageTexts[currentPage] || "";
-  const isImageToolBusy = Boolean(imageFilterJob) || isOcrRunning || isCapturing;
+  const isImageToolBusy =
+    Boolean(imageFilterJob) || isOcrRunning || isCapturing;
 
   const clearEditorMetadata = () => {
     setPageTexts([]);
@@ -870,10 +886,7 @@ export default function App() {
   };
 
   const showScannerUnavailableAlert = () => {
-    Alert.alert(
-      t("scannerUnavailableTitle"),
-      t("scannerUnavailableMessage"),
-    );
+    Alert.alert(t("scannerUnavailableTitle"), t("scannerUnavailableMessage"));
   };
 
   const resetEditorState = useCallback(
@@ -921,7 +934,10 @@ export default function App() {
             );
             const updated = savedScans.filter((item) => item.id !== scan.id);
             setSavedScans(updated);
-            await AsyncStorage.setItem(SCANS_STORAGE_KEY, JSON.stringify(updated));
+            await AsyncStorage.setItem(
+              SCANS_STORAGE_KEY,
+              JSON.stringify(updated),
+            );
           } catch (e) {
             console.error(e);
           }
@@ -1021,7 +1037,9 @@ export default function App() {
       await bakeCurrentPageIfNeeded();
       const previousState = undoStack[undoStack.length - 1];
       setScannedImagesList(previousState.pages);
-      setPageTexts(alignPageTexts(previousState.pageTexts, previousState.pages.length));
+      setPageTexts(
+        alignPageTexts(previousState.pageTexts, previousState.pages.length),
+      );
       setCurrentPage(
         Math.min(previousState.currentPage, previousState.pages.length - 1),
       );
@@ -1076,23 +1094,26 @@ export default function App() {
     ],
   );
 
-  const completeImport = useCallback(async (job: ImportJob, pages: string[]) => {
-    try {
-      await applyPagesToWorkspace(
-        pages,
-        job.append,
-        job.append ? undefined : stripFileExtension(job.name),
-      );
-    } catch (error) {
-      console.error(error);
-      Alert.alert(t("importErrorTitle"), t("importErrorMessage"));
-    } finally {
-      setActiveImport(null);
-      if (processingImportIdRef.current === job.id) {
-        processingImportIdRef.current = null;
+  const completeImport = useCallback(
+    async (job: ImportJob, pages: string[]) => {
+      try {
+        await applyPagesToWorkspace(
+          pages,
+          job.append,
+          job.append ? undefined : stripFileExtension(job.name),
+        );
+      } catch (error) {
+        console.error(error);
+        Alert.alert(t("importErrorTitle"), t("importErrorMessage"));
+      } finally {
+        setActiveImport(null);
+        if (processingImportIdRef.current === job.id) {
+          processingImportIdRef.current = null;
+        }
       }
-    }
-  }, [applyPagesToWorkspace, t]);
+    },
+    [applyPagesToWorkspace, t],
+  );
 
   useEffect(() => {
     if (!activeImport && pendingImports.length > 0) {
@@ -1199,18 +1220,12 @@ export default function App() {
 
         const validJobs = jobs.filter(Boolean) as ImportJob[];
         if (validJobs.length === 0) {
-          Alert.alert(
-            t("unsupportedFileTitle"),
-            t("unsupportedFileMessage"),
-          );
+          Alert.alert(t("unsupportedFileTitle"), t("unsupportedFileMessage"));
           return;
         }
 
         if (validJobs.length !== jobs.length) {
-          Alert.alert(
-            t("someFilesSkippedTitle"),
-            t("someFilesSkippedMessage"),
-          );
+          Alert.alert(t("someFilesSkippedTitle"), t("someFilesSkippedMessage"));
         }
 
         setIsLoadingDocument(true);
@@ -1376,9 +1391,7 @@ export default function App() {
 
   const toggleFavoriteScan = async (scanId: string) => {
     const updated = savedScans.map((scan) =>
-      scan.id === scanId
-        ? { ...scan, isFavorite: !scan.isFavorite }
-        : scan,
+      scan.id === scanId ? { ...scan, isFavorite: !scan.isFavorite } : scan,
     );
     setSavedScans(updated);
     await AsyncStorage.setItem(SCANS_STORAGE_KEY, JSON.stringify(updated));
@@ -1504,7 +1517,10 @@ export default function App() {
       );
       const newSigs = [fileUri, ...savedSignatures];
       setSavedSignatures(newSigs);
-      await AsyncStorage.setItem(SIGNATURES_STORAGE_KEY, JSON.stringify(newSigs));
+      await AsyncStorage.setItem(
+        SIGNATURES_STORAGE_KEY,
+        JSON.stringify(newSigs),
+      );
       addSignatureToDocument(fileUri);
     } catch (e) {
       console.error(e);
@@ -1628,7 +1644,8 @@ export default function App() {
             encoding: "utf8",
           });
         }
-        const customUri = FileSystem.cacheDirectory + `${safeName}.${extension}`;
+        const customUri =
+          FileSystem.cacheDirectory + `${safeName}.${extension}`;
         if (tempUri !== customUri) {
           await FileSystem.copyAsync({ from: tempUri, to: customUri });
         }
@@ -1766,9 +1783,9 @@ export default function App() {
       <View style={styles.header}>
         <View>
           <Text style={styles.appName}>
-            Cam<Text style={styles.appNameBold}>Scanner</Text>
+            {t("titlepone")}
+            <Text style={styles.appNameBold}> {t("titleptwo")}</Text>
           </Text>
-          <Text style={styles.appSubtitle}>{t("appSubtitle")}</Text>
         </View>
         <TouchableOpacity
           accessibilityLabel={t("changeLanguage")}
@@ -1883,9 +1900,7 @@ export default function App() {
           {savedScans.length === 0 ? (
             <View style={styles.emptyScansContainer}>
               <Ionicons name="documents-outline" size={40} color="#334155" />
-              <Text style={styles.emptyScansText}>
-                {t("noScansYet")}
-              </Text>
+              <Text style={styles.emptyScansText}>{t("noScansYet")}</Text>
             </View>
           ) : (
             savedScans.slice(0, 3).map((item) => (
@@ -1952,7 +1967,9 @@ export default function App() {
 
         return searchable.includes(query);
       })
-      .sort((left, right) => Number(right.isFavorite) - Number(left.isFavorite));
+      .sort(
+        (left, right) => Number(right.isFavorite) - Number(left.isFavorite),
+      );
 
     return (
       <View style={styles.dashboardContainer}>
@@ -1995,9 +2012,7 @@ export default function App() {
           {filtered.length === 0 ? (
             <View style={styles.emptyScansContainer}>
               <Ionicons name="folder-open-outline" size={50} color="#334155" />
-              <Text style={styles.emptyScansText}>
-                {t("noDocumentsFound")}
-              </Text>
+              <Text style={styles.emptyScansText}>{t("noDocumentsFound")}</Text>
             </View>
           ) : (
             <View style={viewMode === "grid" ? styles.gridContainer : {}}>
@@ -2660,18 +2675,18 @@ export default function App() {
           </View>
         </View>
       </Modal>
-        <Modal
-          visible={isPageAddModalVisible}
-          transparent={true}
-          animationType="slide"
-          onRequestClose={() => {
-            if (!isPageAddBusy) setPageAddModalVisible(false);
-          }}
-        >
-          <View style={styles.modalOverlay}>
-            <View style={styles.modalContent}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>{t("addMergePage")}</Text>
+      <Modal
+        visible={isPageAddModalVisible}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => {
+          if (!isPageAddBusy) setPageAddModalVisible(false);
+        }}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>{t("addMergePage")}</Text>
               <TouchableOpacity
                 disabled={isPageAddBusy}
                 onPress={() => setPageAddModalVisible(false)}
@@ -2914,7 +2929,8 @@ export default function App() {
                       currentTexts,
                       scannedImagesList.length,
                     );
-                    updatedTexts[parsed.pageIndex] = parsed.text?.trim?.() || "";
+                    updatedTexts[parsed.pageIndex] =
+                      parsed.text?.trim?.() || "";
                     return updatedTexts;
                   });
                 } else if (parsed.type === "import_error") {
