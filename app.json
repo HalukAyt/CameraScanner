@@ -34,9 +34,9 @@
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/images/ITECH.png",
-        "backgroundImage": "./assets/images/ITECH.png",
-        "monochromeImage": "./assets/images/ITECH.png"
+        "foregroundImage": "./assets/images/iconw.png",
+        "backgroundImage": "./assets/images/iconw.png",
+        "monochromeImage": "./assets/images/iconw.png"
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
@@ -48,14 +48,14 @@
     },
     "web": {
       "output": "static",
-      "favicon": "./assets/images/ITECH.png"
+      "favicon": "./assets/images/iconw.png"
     },
     "plugins": [
       "expo-router",
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/ITECH.png",
+          "image": "./assets/images/iconw.png",
           "imageWidth": 200,
           "resizeMode": "contain",
           "backgroundColor": "#ffffff",

@@ -1,5 +1,6 @@
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { Asset } from "expo-asset";
 import * as DocumentPicker from "expo-document-picker";
 import * as FileSystem from "expo-file-system/legacy";
 import * as ImageManipulator from "expo-image-manipulator";
@@ -54,12 +55,7 @@ type ImportKind = "pdf" | "docx" | "image";
 type ShareFormat = "jpg" | "pdf" | "pdfCompressed" | "word" | "print";
 type ImageFilterMode = "gray" | "blackWhite" | "enhance";
 type ScanMode =
-  | "document"
-  | "form"
-  | "slide"
-  | "whiteboard"
-  | "idCard"
-  | "book";
+  "document" | "form" | "slide" | "whiteboard" | "idCard" | "book";
 
 interface ImportJob {
   id: string;
@@ -137,6 +133,9 @@ const translations = {
     filterBlackWhite: "S/B",
     filterEnhanced: "Netleştir",
     filterGray: "Gri",
+    fitToScreen: "Sığdır",
+    editorDetailsToggle: "Detaylar",
+    editorToolsToggle: "Araçlar",
     heroSubtitle: "Yapay zeka destekli belge tespiti",
     heroTitle: "Hızlı Tarama Başlat",
     imageProcessingErrorMessage: "Görsel işlenirken bir sorun oluştu.",
@@ -245,6 +244,9 @@ const translations = {
     filterBlackWhite: "B/W",
     filterEnhanced: "Enhance",
     filterGray: "Gray",
+    fitToScreen: "Fit",
+    editorDetailsToggle: "Details",
+    editorToolsToggle: "Tools",
     heroSubtitle: "AI-assisted document detection",
     heroTitle: "Start Quick Scan",
     imageProcessingErrorMessage: "Something went wrong while processing image.",
@@ -565,17 +567,46 @@ interface PlacedSignature {
   baseRotate: number;
 }
 
+// Base rendered size (px) of a signature at scale 1. Real min/max visible
+// size is this multiplied by SIGNATURE_MIN_SCALE / SIGNATURE_MAX_SCALE.
+const SIGNATURE_BASE_WIDTH = 140;
+const SIGNATURE_BASE_HEIGHT = 70;
+const SIGNATURE_MIN_SCALE = 0.15;
+const SIGNATURE_MAX_SCALE = 3.5;
+
+const clampSignatureScale = (value: number) =>
+  Math.max(SIGNATURE_MIN_SCALE, Math.min(SIGNATURE_MAX_SCALE, value));
+
 const DraggableSignature = ({
   sign,
   isActive,
   onPress,
   isCapturing,
+  docScaleRef,
+  docSizeRef,
 }: {
   sign: PlacedSignature;
   isActive: boolean;
   onPress: () => void;
   isCapturing: boolean;
+  docScaleRef: { value: number };
+  docSizeRef: { current: { width: number; height: number } };
 }) => {
+  const currentZoom = () => docScaleRef.value || 1;
+
+  const clampPan = (x: number, y: number) => {
+    const w = SIGNATURE_BASE_WIDTH * sign.baseScale;
+    const h = SIGNATURE_BASE_HEIGHT * sign.baseScale;
+    const docSize = docSizeRef.current;
+    if (!docSize.width || !docSize.height) return { x, y };
+    const maxX = Math.max(0, docSize.width - w);
+    const maxY = Math.max(0, docSize.height - h);
+    return {
+      x: Math.max(0, Math.min(maxX, x)),
+      y: Math.max(0, Math.min(maxY, y)),
+    };
+  };
+
   const panResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
@@ -585,12 +616,51 @@ const DraggableSignature = ({
         sign.pan.setOffset({ x: sign.pan.x._value, y: sign.pan.y._value });
         sign.pan.setValue({ x: 0, y: 0 });
       },
-      onPanResponderMove: Animated.event(
-        [null, { dx: sign.pan.x, dy: sign.pan.y }],
-        { useNativeDriver: false },
-      ),
+      onPanResponderMove: (_evt, gestureState) => {
+        const zoom = currentZoom();
+        sign.pan.setValue({
+          x: gestureState.dx / zoom,
+          y: gestureState.dy / zoom,
+        });
+      },
       onPanResponderRelease: () => {
         sign.pan.flattenOffset();
+        // @ts-ignore
+        const { x, y } = clampPan(sign.pan.x._value, sign.pan.y._value);
+        sign.pan.setValue({ x, y });
+      },
+    }),
+  ).current;
+
+  const resizeResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: (evt) => {
+        evt.stopPropagation();
+        onPress();
+      },
+      onPanResponderMove: (evt, gestureState) => {
+        evt.stopPropagation();
+        const zoom = currentZoom();
+        const delta =
+          (gestureState.dx / zoom + gestureState.dy / zoom) /
+          2 /
+          SIGNATURE_BASE_WIDTH;
+        const nextScale = clampSignatureScale(sign.baseScale + delta);
+        sign.scale.setValue(nextScale);
+      },
+      onPanResponderRelease: (_evt, gestureState) => {
+        const zoom = currentZoom();
+        const delta =
+          (gestureState.dx / zoom + gestureState.dy / zoom) /
+          2 /
+          SIGNATURE_BASE_WIDTH;
+        sign.baseScale = clampSignatureScale(sign.baseScale + delta);
+        sign.scale.setValue(sign.baseScale);
+        // @ts-ignore
+        const { x, y } = clampPan(sign.pan.x._value, sign.pan.y._value);
+        sign.pan.setValue({ x, y });
       },
     }),
   ).current;
@@ -620,6 +690,15 @@ const DraggableSignature = ({
       ]}
     >
       <Image source={{ uri: sign.uri }} style={styles.signatureImage} />
+      {isActive && !isCapturing && (
+        <View
+          {...resizeResponder.panHandlers}
+          hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
+          style={styles.signatureResizeHandle}
+        >
+          <View style={styles.signatureResizeHandleDot} />
+        </View>
+      )}
     </Animated.View>
   );
 };
@@ -666,6 +745,8 @@ export default function App() {
   const [savedScans, setSavedScans] = useState<SavedScan[]>([]);
   const [savedSignatures, setSavedSignatures] = useState<string[]>([]);
   const [isSignModalVisible, setSignModalVisible] = useState(false);
+  const [isEditorDetailsExpanded, setIsEditorDetailsExpanded] = useState(false);
+  const [isEditorToolsExpanded, setIsEditorToolsExpanded] = useState(false);
   const [isShareModalVisible, setShareModalVisible] = useState(false);
   const [isOcrModalVisible, setOcrModalVisible] = useState(false);
   const [isPageAddModalVisible, setPageAddModalVisible] = useState(false);
@@ -676,6 +757,130 @@ export default function App() {
   );
   const [activeSignId, setActiveSignId] = useState<string | null>(null);
   const viewShotRef = useRef<ViewShot>(null);
+  const docSizeRef = useRef({ width: 0, height: 0 });
+  const docScaleAnimated = useRef(new Animated.Value(1)).current;
+  const docTranslateAnimated = useRef(
+    new Animated.ValueXY({ x: 0, y: 0 }),
+  ).current;
+  // Plain mutable mirrors of the animated values above, read synchronously
+  // from PanResponder callbacks (which run on the JS thread already, so no
+  // worklets/shared values are needed for this).
+  const docScaleRef = useRef({ value: 1 }).current;
+  const docTranslateRef = useRef({ x: 0, y: 0 }).current;
+  const pinchPrevDistance = useRef(0);
+  const pinchPrevMidpoint = useRef<{ x: number; y: number } | null>(null);
+  const DOC_MIN_ZOOM = 1;
+  const DOC_MAX_ZOOM = 5;
+  const [isDocZoomed, setIsDocZoomed] = useState(false);
+
+  const clampDocTranslate = (
+    x: number,
+    y: number,
+    scale: number,
+  ): { x: number; y: number } => {
+    const docSize = docSizeRef.current;
+    if (!docSize.width || !docSize.height) return { x: 0, y: 0 };
+    const maxOffsetX = (docSize.width * (scale - 1)) / 2;
+    const maxOffsetY = (docSize.height * (scale - 1)) / 2;
+    return {
+      x: Math.max(-maxOffsetX, Math.min(maxOffsetX, x)),
+      y: Math.max(-maxOffsetY, Math.min(maxOffsetY, y)),
+    };
+  };
+
+  const resetDocZoom = useCallback(() => {
+    Animated.parallel([
+      Animated.timing(docScaleAnimated, {
+        toValue: 1,
+        duration: 200,
+        useNativeDriver: false,
+      }),
+      Animated.timing(docTranslateAnimated, {
+        toValue: { x: 0, y: 0 },
+        duration: 200,
+        useNativeDriver: false,
+      }),
+    ]).start();
+    docScaleRef.value = 1;
+    docTranslateRef.x = 0;
+    docTranslateRef.y = 0;
+    setIsDocZoomed(false);
+  }, [docScaleAnimated, docTranslateAnimated, docScaleRef, docTranslateRef]);
+
+  const docZoomPanResponder = useRef(
+    PanResponder.create({
+      // Capture phase runs before any descendant (signature drag, tap to
+      // deselect) gets a chance to claim the touch, but only steals it once
+      // a second finger is actually down — a single-finger touch always
+      // falls through to children untouched.
+      onStartShouldSetPanResponderCapture: (evt) =>
+        evt.nativeEvent.touches.length >= 2,
+      onMoveShouldSetPanResponderCapture: (evt) =>
+        evt.nativeEvent.touches.length >= 2,
+      onPanResponderGrant: () => {
+        pinchPrevDistance.current = 0;
+        pinchPrevMidpoint.current = null;
+      },
+      onPanResponderMove: (evt) => {
+        const touches = evt.nativeEvent.touches;
+        if (touches.length < 2) return;
+        const [t1, t2] = touches;
+        const dx = t1.pageX - t2.pageX;
+        const dy = t1.pageY - t2.pageY;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        const midpoint = {
+          x: (t1.pageX + t2.pageX) / 2,
+          y: (t1.pageY + t2.pageY) / 2,
+        };
+
+        if (pinchPrevDistance.current === 0) {
+          pinchPrevDistance.current = distance;
+          pinchPrevMidpoint.current = midpoint;
+          return;
+        }
+
+        const scaleDelta = distance / pinchPrevDistance.current;
+        const nextScale = Math.max(
+          DOC_MIN_ZOOM,
+          Math.min(DOC_MAX_ZOOM, docScaleRef.value * scaleDelta),
+        );
+        const prevMid = pinchPrevMidpoint.current || midpoint;
+        const rawX = docTranslateRef.x + (midpoint.x - prevMid.x);
+        const rawY = docTranslateRef.y + (midpoint.y - prevMid.y);
+        const clamped = clampDocTranslate(rawX, rawY, nextScale);
+
+        docScaleRef.value = nextScale;
+        docTranslateRef.x = clamped.x;
+        docTranslateRef.y = clamped.y;
+        pinchPrevDistance.current = distance;
+        pinchPrevMidpoint.current = midpoint;
+
+        docScaleAnimated.setValue(nextScale);
+        docTranslateAnimated.setValue(clamped);
+      },
+      onPanResponderRelease: () => {
+        pinchPrevDistance.current = 0;
+        pinchPrevMidpoint.current = null;
+        if (docScaleRef.value <= DOC_MIN_ZOOM + 0.01) {
+          resetDocZoom();
+        } else {
+          setIsDocZoomed(true);
+        }
+      },
+      onPanResponderTerminate: () => {
+        pinchPrevDistance.current = 0;
+        pinchPrevMidpoint.current = null;
+      },
+    }),
+  ).current;
+
+  const docZoomAnimatedStyle = {
+    transform: [
+      { translateX: docTranslateAnimated.x },
+      { translateY: docTranslateAnimated.y },
+      { scale: docScaleAnimated },
+    ],
+  };
 
   const [adsModule, setAdsModule] = useState<GoogleMobileAdsModule | null>(
     null,
@@ -727,6 +932,65 @@ export default function App() {
   useEffect(() => {
     loadData();
   }, []);
+
+  const [pdfJsSource, setPdfJsSource] = useState<string | null>(null);
+  const [docxJsSource, setDocxJsSource] = useState<string | null>(null);
+  const [tesseractJsSource, setTesseractJsSource] = useState<string | null>(
+    null,
+  );
+
+  const loadBundledScript = useCallback(async (module: number) => {
+    const asset = Asset.fromModule(module);
+    await asset.downloadAsync();
+    if (!asset.localUri) return null;
+    return FileSystem.readAsStringAsync(asset.localUri);
+  }, []);
+
+  useEffect(() => {
+    // All parsing libraries below are bundled locally (assets/pdfjs) so
+    // PDF/DOCX import and OCR work fully offline instead of depending on a
+    // CDN being reachable at runtime.
+    (async () => {
+      try {
+        const text = await loadBundledScript(
+          require("../assets/pdfjs/pdf.min.js.txt"),
+        );
+        if (text) setPdfJsSource(text);
+      } catch (e) {
+        console.error("Failed to load bundled pdf.js", e);
+      }
+    })();
+
+    (async () => {
+      try {
+        const [jszip, docxPreview, html2canvas] = await Promise.all([
+          loadBundledScript(require("../assets/pdfjs/jszip.min.js.txt")),
+          loadBundledScript(require("../assets/pdfjs/docx-preview.min.js.txt")),
+          loadBundledScript(require("../assets/pdfjs/html2canvas.min.js.txt")),
+        ]);
+        if (jszip && docxPreview && html2canvas) {
+          setDocxJsSource(`${jszip}\n;\n${docxPreview}\n;\n${html2canvas}`);
+        }
+      } catch (e) {
+        console.error("Failed to load bundled docx libraries", e);
+      }
+    })();
+
+    (async () => {
+      try {
+        const text = await loadBundledScript(
+          require("../assets/pdfjs/tesseract.min.js.txt"),
+        );
+        if (text) setTesseractJsSource(text);
+      } catch (e) {
+        console.error("Failed to load bundled tesseract.js", e);
+      }
+    })();
+  }, [loadBundledScript]);
+
+  useEffect(() => {
+    resetDocZoom();
+  }, [currentPage, resetDocZoom]);
 
   useEffect(() => {
     if (
@@ -965,7 +1229,7 @@ export default function App() {
   const updateActiveSignScale = (change: number) => {
     const sign = placedSignatures.find((s) => s.id === activeSignId);
     if (sign) {
-      sign.baseScale = Math.max(0.5, Math.min(3.0, sign.baseScale + change));
+      sign.baseScale = clampSignatureScale(sign.baseScale + change);
       Animated.timing(sign.scale, {
         toValue: sign.baseScale,
         duration: 150,
@@ -1133,6 +1397,42 @@ export default function App() {
       void completeImport(activeImport, [activeImport.uri]);
     }
   }, [activeImport, completeImport]);
+
+  useEffect(() => {
+    if (activeImport?.kind !== "pdf" && activeImport?.kind !== "docx") {
+      return;
+    }
+    const importId = activeImport.id;
+    const timeoutId = setTimeout(() => {
+      setActiveImport((current) => {
+        if (!current || current.id !== importId) return current;
+        Alert.alert(
+          activeImport.kind === "pdf"
+            ? t("pdfErrorTitle")
+            : t("wordErrorTitle"),
+          activeImport.kind === "pdf"
+            ? t("pdfErrorMessage")
+            : t("wordErrorMessage"),
+        );
+        return null;
+      });
+    }, 25000);
+    return () => clearTimeout(timeoutId);
+  }, [activeImport, t]);
+
+  useEffect(() => {
+    if (!ocrJob) return;
+    const jobId = ocrJob.id;
+    const timeoutId = setTimeout(() => {
+      setOcrJob((current) => {
+        if (!current || current.id !== jobId) return current;
+        Alert.alert(t("ocrErrorTitle"), t("ocrErrorMessage"));
+        setIsOcrRunning(false);
+        return null;
+      });
+    }, 40000);
+    return () => clearTimeout(timeoutId);
+  }, [ocrJob, t]);
 
   if (!isLanguageReady) {
     return (
@@ -2156,43 +2456,93 @@ export default function App() {
           <Text style={styles.saveHeaderText}>{t("done")}</Text>
         </TouchableOpacity>
       </View>
-      <View style={styles.metadataBar}>
+      <View style={styles.editorToggleRow}>
         <TouchableOpacity
           style={[
-            styles.favoriteMetaButton,
-            isFavorite && styles.favoriteMetaButtonActive,
+            styles.editorToggleChip,
+            isEditorDetailsExpanded && styles.editorToggleChipActive,
           ]}
-          onPress={() => setIsFavorite((value) => !value)}
+          onPress={() => setIsEditorDetailsExpanded((value) => !value)}
         >
+          <Ionicons name="information-circle-outline" size={16} color="#fff" />
+          <Text style={styles.editorToggleChipText}>
+            {t("editorDetailsToggle")}
+          </Text>
           <Ionicons
-            name={isFavorite ? "star" : "star-outline"}
-            size={20}
-            color={isFavorite ? "#facc15" : "#94a3b8"}
+            name={isEditorDetailsExpanded ? "chevron-up" : "chevron-down"}
+            size={14}
+            color="#fff"
           />
         </TouchableOpacity>
-        <TextInput
-          style={styles.tagsInput}
-          placeholder={t("tagsPlaceholder")}
-          placeholderTextColor="#64748b"
-          value={documentTags}
-          onChangeText={setDocumentTags}
-        />
-      </View>
-      <View style={styles.editorMetaSecondary}>
-        <View style={styles.scanModePill}>
-          <Ionicons name="scan-outline" size={16} color="#a5b4fc" />
-          <Text style={styles.scanModePillText}>
-            {getScanModeLabel(documentScanMode)}
+        <TouchableOpacity
+          style={[
+            styles.editorToggleChip,
+            isEditorToolsExpanded && styles.editorToggleChipActive,
+          ]}
+          onPress={() => setIsEditorToolsExpanded((value) => !value)}
+        >
+          <Ionicons name="construct-outline" size={16} color="#fff" />
+          <Text style={styles.editorToggleChipText}>
+            {t("editorToolsToggle")}
           </Text>
-        </View>
-        <TextInput
-          style={styles.watermarkInput}
-          placeholder={t("watermarkPlaceholder")}
-          placeholderTextColor="#64748b"
-          value={documentWatermark}
-          onChangeText={setDocumentWatermark}
-        />
+          <Ionicons
+            name={isEditorToolsExpanded ? "chevron-up" : "chevron-down"}
+            size={14}
+            color="#fff"
+          />
+        </TouchableOpacity>
+        {isDocZoomed && (
+          <TouchableOpacity
+            style={[styles.editorToggleChip, styles.editorToggleChipActive]}
+            onPress={resetDocZoom}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="contract-outline" size={16} color="#fff" />
+            <Text style={styles.editorToggleChipText}>{t("fitToScreen")}</Text>
+          </TouchableOpacity>
+        )}
       </View>
+      {isEditorDetailsExpanded && (
+        <>
+          <View style={styles.metadataBar}>
+            <TouchableOpacity
+              style={[
+                styles.favoriteMetaButton,
+                isFavorite && styles.favoriteMetaButtonActive,
+              ]}
+              onPress={() => setIsFavorite((value) => !value)}
+            >
+              <Ionicons
+                name={isFavorite ? "star" : "star-outline"}
+                size={20}
+                color={isFavorite ? "#facc15" : "#94a3b8"}
+              />
+            </TouchableOpacity>
+            <TextInput
+              style={styles.tagsInput}
+              placeholder={t("tagsPlaceholder")}
+              placeholderTextColor="#64748b"
+              value={documentTags}
+              onChangeText={setDocumentTags}
+            />
+          </View>
+          <View style={styles.editorMetaSecondary}>
+            <View style={styles.scanModePill}>
+              <Ionicons name="scan-outline" size={16} color="#a5b4fc" />
+              <Text style={styles.scanModePillText}>
+                {getScanModeLabel(documentScanMode)}
+              </Text>
+            </View>
+            <TextInput
+              style={styles.watermarkInput}
+              placeholder={t("watermarkPlaceholder")}
+              placeholderTextColor="#64748b"
+              value={documentWatermark}
+              onChangeText={setDocumentWatermark}
+            />
+          </View>
+        </>
+      )}
       {scannedImagesList.length > 1 && (
         <View style={styles.pageNavigator}>
           <TouchableOpacity
@@ -2224,112 +2574,116 @@ export default function App() {
           </TouchableOpacity>
         </View>
       )}
-      <View style={styles.pageToolsContainer}>
-        <TouchableOpacity
-          style={[
-            styles.pageToolButton,
-            isPageAddBusy && styles.pageToolButtonDisabled,
-          ]}
-          disabled={isPageAddBusy}
-          onPress={openPageAddOptions}
-        >
-          <Ionicons name="add-circle-outline" size={20} color="#fff" />
-          <Text style={styles.pageToolText}>{t("addPage")}</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[
-            styles.pageToolButton,
-            currentPage === 0 && styles.pageToolButtonDisabled,
-          ]}
-          onPress={() => moveCurrentPage(-1)}
-          disabled={currentPage === 0}
-        >
-          <Ionicons name="arrow-back-outline" size={18} color="#fff" />
-          <Text style={styles.pageToolText}>{t("moveLeft")}</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[
-            styles.pageToolButton,
-            currentPage === scannedImagesList.length - 1 &&
-              styles.pageToolButtonDisabled,
-          ]}
-          onPress={() => moveCurrentPage(1)}
-          disabled={currentPage === scannedImagesList.length - 1}
-        >
-          <Ionicons name="arrow-forward-outline" size={18} color="#fff" />
-          <Text style={styles.pageToolText}>{t("moveRight")}</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.pageToolButton, styles.pageToolDeleteButton]}
-          onPress={deleteCurrentPage}
-        >
-          <Ionicons name="trash-outline" size={18} color="#fff" />
-          <Text style={styles.pageToolText}>{t("delete")}</Text>
-        </TouchableOpacity>
-      </View>
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={styles.imageToolsScroll}
-        contentContainerStyle={styles.imageToolsContent}
-      >
-        <Text style={styles.imageToolsTitle}>{t("imageTools")}</Text>
-        <TouchableOpacity
-          style={[
-            styles.imageToolChip,
-            isImageToolBusy && styles.imageToolChipDisabled,
-          ]}
-          disabled={isImageToolBusy}
-          onPress={rotateCurrentPage}
-        >
-          <Ionicons name="refresh-outline" size={18} color="#fff" />
-          <Text style={styles.imageToolText}>{t("rotatePage")}</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[
-            styles.imageToolChip,
-            isImageToolBusy && styles.imageToolChipDisabled,
-          ]}
-          disabled={isImageToolBusy}
-          onPress={() => applyFilterToCurrentPage("gray")}
-        >
-          <Ionicons name="contrast-outline" size={18} color="#fff" />
-          <Text style={styles.imageToolText}>{t("filterGray")}</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[
-            styles.imageToolChip,
-            isImageToolBusy && styles.imageToolChipDisabled,
-          ]}
-          disabled={isImageToolBusy}
-          onPress={() => applyFilterToCurrentPage("blackWhite")}
-        >
-          <Ionicons name="barcode-outline" size={18} color="#fff" />
-          <Text style={styles.imageToolText}>{t("filterBlackWhite")}</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[
-            styles.imageToolChip,
-            isImageToolBusy && styles.imageToolChipDisabled,
-          ]}
-          disabled={isImageToolBusy}
-          onPress={() => applyFilterToCurrentPage("enhance")}
-        >
-          <Ionicons name="sparkles-outline" size={18} color="#fff" />
-          <Text style={styles.imageToolText}>{t("filterEnhanced")}</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[
-            styles.imageToolChip,
-            isImageToolBusy && styles.imageToolChipDisabled,
-          ]}
-          disabled={isImageToolBusy}
-          onPress={() => setOcrModalVisible(true)}
-        >
-          <Ionicons name="text-outline" size={18} color="#fff" />
-          <Text style={styles.imageToolText}>{t("ocrText")}</Text>
-        </TouchableOpacity>
-      </ScrollView>
+      {isEditorToolsExpanded && (
+        <>
+          <View style={styles.pageToolsContainer}>
+            <TouchableOpacity
+              style={[
+                styles.pageToolButton,
+                isPageAddBusy && styles.pageToolButtonDisabled,
+              ]}
+              disabled={isPageAddBusy}
+              onPress={openPageAddOptions}
+            >
+              <Ionicons name="add-circle-outline" size={20} color="#fff" />
+              <Text style={styles.pageToolText}>{t("addPage")}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.pageToolButton,
+                currentPage === 0 && styles.pageToolButtonDisabled,
+              ]}
+              onPress={() => moveCurrentPage(-1)}
+              disabled={currentPage === 0}
+            >
+              <Ionicons name="arrow-back-outline" size={18} color="#fff" />
+              <Text style={styles.pageToolText}>{t("moveLeft")}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.pageToolButton,
+                currentPage === scannedImagesList.length - 1 &&
+                  styles.pageToolButtonDisabled,
+              ]}
+              onPress={() => moveCurrentPage(1)}
+              disabled={currentPage === scannedImagesList.length - 1}
+            >
+              <Ionicons name="arrow-forward-outline" size={18} color="#fff" />
+              <Text style={styles.pageToolText}>{t("moveRight")}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.pageToolButton, styles.pageToolDeleteButton]}
+              onPress={deleteCurrentPage}
+            >
+              <Ionicons name="trash-outline" size={18} color="#fff" />
+              <Text style={styles.pageToolText}>{t("delete")}</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.imageToolsScroll}
+            contentContainerStyle={styles.imageToolsContent}
+          >
+            <Text style={styles.imageToolsTitle}>{t("imageTools")}</Text>
+            <TouchableOpacity
+              style={[
+                styles.imageToolChip,
+                isImageToolBusy && styles.imageToolChipDisabled,
+              ]}
+              disabled={isImageToolBusy}
+              onPress={rotateCurrentPage}
+            >
+              <Ionicons name="refresh-outline" size={18} color="#fff" />
+              <Text style={styles.imageToolText}>{t("rotatePage")}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.imageToolChip,
+                isImageToolBusy && styles.imageToolChipDisabled,
+              ]}
+              disabled={isImageToolBusy}
+              onPress={() => applyFilterToCurrentPage("gray")}
+            >
+              <Ionicons name="contrast-outline" size={18} color="#fff" />
+              <Text style={styles.imageToolText}>{t("filterGray")}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.imageToolChip,
+                isImageToolBusy && styles.imageToolChipDisabled,
+              ]}
+              disabled={isImageToolBusy}
+              onPress={() => applyFilterToCurrentPage("blackWhite")}
+            >
+              <Ionicons name="barcode-outline" size={18} color="#fff" />
+              <Text style={styles.imageToolText}>{t("filterBlackWhite")}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.imageToolChip,
+                isImageToolBusy && styles.imageToolChipDisabled,
+              ]}
+              disabled={isImageToolBusy}
+              onPress={() => applyFilterToCurrentPage("enhance")}
+            >
+              <Ionicons name="sparkles-outline" size={18} color="#fff" />
+              <Text style={styles.imageToolText}>{t("filterEnhanced")}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.imageToolChip,
+                isImageToolBusy && styles.imageToolChipDisabled,
+              ]}
+              disabled={isImageToolBusy}
+              onPress={() => setOcrModalVisible(true)}
+            >
+              <Ionicons name="text-outline" size={18} color="#fff" />
+              <Text style={styles.imageToolText}>{t("ocrText")}</Text>
+            </TouchableOpacity>
+          </ScrollView>
+        </>
+      )}
       {undoStack.length > 0 && (
         <View style={styles.undoBar}>
           <Text style={styles.undoText}>
@@ -2363,43 +2717,62 @@ export default function App() {
         </ScrollView>
       )}
       <View style={styles.resultContainer}>
-        <TouchableWithoutFeedback onPress={() => setActiveSignId(null)}>
-          <View
-            style={{
+        <Animated.View
+          {...docZoomPanResponder.panHandlers}
+          style={[
+            {
               flex: 1,
               width: "100%",
               alignItems: "center",
               justifyContent: "flex-start",
-            }}
-          >
-            <ViewShot
-              ref={viewShotRef}
-              style={styles.viewShotContainer}
-              options={{ format: "jpg", quality: 1.0 }}
+            },
+            docZoomAnimatedStyle,
+          ]}
+        >
+          <TouchableWithoutFeedback onPress={() => setActiveSignId(null)}>
+            <View
+              style={{
+                flex: 1,
+                width: "100%",
+                alignItems: "center",
+                justifyContent: "flex-start",
+              }}
             >
-              <ImageBackground
-                resizeMode="contain"
-                style={styles.documentImage}
-                source={{ uri: scannedImagesList[currentPage] }}
+              <ViewShot
+                ref={viewShotRef}
+                style={styles.viewShotContainer}
+                options={{ format: "jpg", quality: 1.0 }}
               >
-                {documentWatermark.trim().length > 0 && !isCapturing && (
-                  <Text style={styles.watermarkPreviewText}>
-                    {documentWatermark.trim()}
-                  </Text>
-                )}
-                {placedSignatures.map((sign) => (
-                  <DraggableSignature
-                    key={sign.id}
-                    sign={sign}
-                    isActive={activeSignId === sign.id}
-                    isCapturing={isCapturing}
-                    onPress={() => setActiveSignId(sign.id)}
-                  />
-                ))}
-              </ImageBackground>
-            </ViewShot>
-          </View>
-        </TouchableWithoutFeedback>
+                <ImageBackground
+                  resizeMode="contain"
+                  style={styles.documentImage}
+                  source={{ uri: scannedImagesList[currentPage] }}
+                  onLayout={(e) => {
+                    const { width, height } = e.nativeEvent.layout;
+                    docSizeRef.current = { width, height };
+                  }}
+                >
+                  {documentWatermark.trim().length > 0 && !isCapturing && (
+                    <Text style={styles.watermarkPreviewText}>
+                      {documentWatermark.trim()}
+                    </Text>
+                  )}
+                  {placedSignatures.map((sign) => (
+                    <DraggableSignature
+                      key={sign.id}
+                      sign={sign}
+                      isActive={activeSignId === sign.id}
+                      isCapturing={isCapturing}
+                      onPress={() => setActiveSignId(sign.id)}
+                      docScaleRef={docScaleRef}
+                      docSizeRef={docSizeRef}
+                    />
+                  ))}
+                </ImageBackground>
+              </ViewShot>
+            </View>
+          </TouchableWithoutFeedback>
+        </Animated.View>
         {activeSignId && !isCapturing && (
           <View style={styles.signatureControlsPanel}>
             <TouchableOpacity
@@ -2916,10 +3289,11 @@ export default function App() {
           />
         </View>
       )}
-      {ocrJob && (
+      {ocrJob && tesseractJsSource && (
         <View style={styles.hiddenWebView}>
           <WebView
             originWhitelist={["*"]}
+            injectedJavaScriptBeforeContentLoaded={tesseractJsSource}
             onMessage={(e) => {
               try {
                 const parsed = JSON.parse(e.nativeEvent.data);
@@ -2948,9 +3322,17 @@ export default function App() {
               }
             }}
             source={{
-              html: `<html><body style="margin:0;"><script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script><script>
+              // Tesseract.js's core script is bundled locally (no CDN fetch),
+              // but it still needs network access to download its WASM
+              // core + language trained-data on first OCR run.
+              html: `<html><body style="margin:0;"><script>
+                  window.onerror = function(message) {
+                    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'import_error', message: String(message) }));
+                    return true;
+                  };
                   (async function() {
                     try {
+                      if (!window.Tesseract) { throw new Error('Tesseract.js failed to load.'); }
                       var result = await Tesseract.recognize(
                         'data:image/jpeg;base64,${ocrJob.base64}',
                         '${ocrLanguage}'
@@ -2969,10 +3351,11 @@ export default function App() {
           />
         </View>
       )}
-      {activeImport?.kind === "pdf" && activeImport.base64 && (
+      {activeImport?.kind === "pdf" && activeImport.base64 && pdfJsSource && (
         <View style={styles.hiddenWebView}>
           <WebView
             originWhitelist={["*"]}
+            injectedJavaScriptBeforeContentLoaded={pdfJsSource}
             onMessage={async (e) => {
               const parsed = JSON.parse(e.nativeEvent.data);
               if (parsed.type === "pdf_page") {
@@ -3002,35 +3385,49 @@ export default function App() {
               }
             }}
             source={{
-              html: `<html><head><script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script></head><body><canvas id="c"></canvas><script>
-                  var pdfjsLib = window['pdfjs-dist/build/pdf'];
-                  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
-                  var raw = atob('${activeImport.base64}'); var uint8Array = new Uint8Array(raw.length);
-                  for (var i = 0; i < raw.length; i++) { uint8Array[i] = raw.charCodeAt(i); }
-                  pdfjsLib.getDocument({data: uint8Array}).promise.then(function(pdf) {
-                    var n = pdf.numPages;
-                    var process = function(num) {
-                      pdf.getPage(num).then(function(page) {
-                        var v = page.getViewport({scale: 1.5}); var canvas = document.getElementById('c');
-                        canvas.height = v.height; canvas.width = v.width;
-                        page.render({canvasContext: canvas.getContext('2d'), viewport: v}).promise.then(function() {
-                          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'pdf_page', pageIndex: num - 1, totalPages: n, base64: canvas.toDataURL('image/jpeg', 0.8) }));
-                          if(num < n) process(num + 1);
-                        });
+              // pdf.js itself is injected via injectedJavaScriptBeforeContentLoaded
+              // (bundled locally) so this never needs network access.
+              html: `<html><head><script>
+                  window.__reportImportError = function(message) {
+                    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'import_error', message: String(message) }));
+                  };
+                  window.onerror = function(message) { window.__reportImportError(message); return true; };
+                </script></head><body><canvas id="c"></canvas><script>
+                  try {
+                    var pdfjsLib = window['pdfjs-dist/build/pdf'];
+                    if (!pdfjsLib) { window.__reportImportError('pdf.js failed to load.'); }
+                    else {
+                      var raw = atob('${activeImport.base64}'); var uint8Array = new Uint8Array(raw.length);
+                      for (var i = 0; i < raw.length; i++) { uint8Array[i] = raw.charCodeAt(i); }
+                      pdfjsLib.getDocument({data: uint8Array}).promise.then(function(pdf) {
+                        var n = pdf.numPages;
+                        var process = function(num) {
+                          pdf.getPage(num).then(function(page) {
+                            var v = page.getViewport({scale: 1.5}); var canvas = document.getElementById('c');
+                            canvas.height = v.height; canvas.width = v.width;
+                            page.render({canvasContext: canvas.getContext('2d'), viewport: v}).promise.then(function() {
+                              window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'pdf_page', pageIndex: num - 1, totalPages: n, base64: canvas.toDataURL('image/jpeg', 0.8) }));
+                              if(num < n) process(num + 1);
+                            }).catch(function(error) { window.__reportImportError(error); });
+                          }).catch(function(error) { window.__reportImportError(error); });
+                        }; process(1);
+                      }).catch(function(error) {
+                        window.__reportImportError(error);
                       });
-                    }; process(1);
-                  }).catch(function(error) {
-                    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'import_error', message: String(error) }));
-                  });
+                    }
+                  } catch (error) {
+                    window.__reportImportError(error);
+                  }
                 </script></body></html>`,
             }}
           />
         </View>
       )}
-      {activeImport?.kind === "docx" && activeImport.base64 && (
+      {activeImport?.kind === "docx" && activeImport.base64 && docxJsSource && (
         <View style={styles.hiddenWebView}>
           <WebView
             originWhitelist={["*"]}
+            injectedJavaScriptBeforeContentLoaded={docxJsSource}
             onMessage={async (e) => {
               const parsed = JSON.parse(e.nativeEvent.data);
               if (parsed.type === "docx_page") {
@@ -3060,16 +3457,19 @@ export default function App() {
               }
             }}
             source={{
+              // jszip/docx-preview/html2canvas are bundled locally (no CDN
+              // fetch) via injectedJavaScriptBeforeContentLoaded.
               html: `<html><head>
-                  <script src="https://unpkg.com/jszip/dist/jszip.min.js"></script>
-                  <script src="https://cdn.jsdelivr.net/npm/docx-preview@0.3.6/dist/docx-preview.min.js"></script>
-                  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
                   <style>
                     body { margin: 0; background: #fff; }
                     #container { background: #fff; }
                     section.docx { margin: 0 auto 12px !important; box-shadow: none !important; }
                   </style>
                 </head><body><div id="container"></div><script>
+                  window.onerror = function(message) {
+                    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'import_error', message: String(message) }));
+                    return true;
+                  };
                   function base64ToBytes(base64) {
                     var raw = atob(base64);
                     var bytes = new Uint8Array(raw.length);
@@ -3445,6 +3845,30 @@ const styles = StyleSheet.create({
     margin: 0,
     minWidth: 100,
   },
+  editorToggleRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    paddingHorizontal: 15,
+    paddingBottom: 10,
+  },
+  editorToggleChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    backgroundColor: "#1e293b",
+  },
+  editorToggleChipActive: {
+    backgroundColor: "#4338ca",
+  },
+  editorToggleChipText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "700",
+  },
   metadataBar: {
     flexDirection: "row",
     alignItems: "center",
@@ -3651,12 +4075,12 @@ const styles = StyleSheet.create({
   resultContainer: {
     flex: 1,
     alignItems: "center",
-    paddingTop: 10,
+    paddingTop: 6,
     paddingBottom: 90,
   },
   viewShotContainer: {
-    width: "92%",
-    height: "85%",
+    width: "97%",
+    height: "92%",
     backgroundColor: "#fff",
     borderRadius: 12,
     overflow: "hidden",
@@ -3690,6 +4114,23 @@ const styles = StyleSheet.create({
   },
   inactiveSignature: { borderWidth: 0, backgroundColor: "transparent" },
   signatureImage: { width: 140, height: 70, resizeMode: "contain" },
+  signatureResizeHandle: {
+    position: "absolute",
+    right: -14,
+    bottom: -14,
+    width: 28,
+    height: 28,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  signatureResizeHandleDot: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: "#6366f1",
+    borderWidth: 2,
+    borderColor: "#fff",
+  },
   signatureControlsPanel: {
     position: "absolute",
     bottom: 105,
