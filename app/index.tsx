@@ -889,6 +889,7 @@ export default function App() {
   const interstitialRef = useRef<any>(null);
   const hasInitializedAdsRef = useRef(false);
   const processingImportIdRef = useRef<string | null>(null);
+  const doneButtonPressCountRef = useRef(0);
   const t = useCallback(
     (key: TranslationKey) => translations[language][key],
     [language],
@@ -1126,6 +1127,13 @@ export default function App() {
         interstitialRef.current?.load?.();
       }
     }, 350);
+  };
+
+  const showInterstitialAfterEveryThirdDone = () => {
+    doneButtonPressCountRef.current += 1;
+    if (doneButtonPressCountRef.current % 3 === 0) {
+      showInterstitialAd();
+    }
   };
 
   const bannerAdUnitId = adsModule
@@ -1530,7 +1538,6 @@ export default function App() {
 
         setIsLoadingDocument(true);
         setPendingImports((current) => [...current, ...validJobs]);
-        showInterstitialAd();
       }
     } catch (err) {
       setIsLoadingDocument(false);
@@ -2027,6 +2034,7 @@ export default function App() {
         resetEditorState();
         setCurrentScreen("dashboard");
         setIsCapturing(false);
+        showInterstitialAfterEveryThirdDone();
       } catch (e) {
         setIsCapturing(false);
         console.error(e);
