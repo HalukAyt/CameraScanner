@@ -2,7 +2,7 @@
   "expo": {
     "name": "CameraScanner",
     "slug": "CameraScanner",
-    "version": "1.2.3",
+    "version": "1.4.0",
     "orientation": "portrait",
     "icon": "./assets/images/iconw.png",
     "scheme": "camerascanner",
@@ -13,9 +13,7 @@
       "bundleIdentifier": "com.halukayt.CameraScanner",
       "infoPlist": {
         "CFBundleDevelopmentRegion": "tr",
-        "CFBundleLocalizations": [
-          "tr"
-        ],
+        "CFBundleLocalizations": ["tr"],
         "ITSAppUsesNonExemptEncryption": false,
         "NSCameraUsageDescription": "CameraScanner, belgelerinizi taramak ve dijitalleştirmek için kameranıza erişim ister.",
         "NSPhotoLibraryUsageDescription": "Galerinizdeki mevcut belgeleri seçip tarayabilmeniz için fotoğraf kütüphanenize erişim gerekiyor.",
