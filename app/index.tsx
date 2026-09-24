@@ -11,7 +11,13 @@ import {
   getTrackingPermissionsAsync,
   requestTrackingPermissionsAsync,
 } from "expo-tracking-transparency";
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -33,6 +39,18 @@ import {
   View,
 } from "react-native";
 import ViewShot, { captureRef } from "react-native-view-shot";
+import {
+  clampSignatureWidthRatio,
+  clampZoomTranslate,
+  computeBakeSize,
+  FALLBACK_PAGE_ASPECT,
+  fitContain,
+  resolveSignatureResize,
+  SIGNATURE_DEFAULT_WIDTH_RATIO,
+  SIGNATURE_FALLBACK_ASPECT,
+  signatureRectForPage,
+  clampSignaturePosition,
+} from "../lib/documentGeometry";
 import { WebView } from "react-native-webview";
 
 // --- ADMOB MODÜLLERİ ---
@@ -134,6 +152,7 @@ const translations = {
     filterEnhanced: "Netleştir",
     filterGray: "Gri",
     fitToScreen: "Sığdır",
+    fullscreen: "Tam Ekran",
     editorDetailsToggle: "Detaylar",
     editorToolsToggle: "Araçlar",
     heroSubtitle: "Yapay zeka destekli belge tespiti",
@@ -245,6 +264,7 @@ const translations = {
     filterEnhanced: "Enhance",
     filterGray: "Gray",
     fitToScreen: "Fit",
+    fullscreen: "Fullscreen",
     editorDetailsToggle: "Details",
     editorToolsToggle: "Tools",
     heroSubtitle: "AI-assisted document detection",
@@ -557,25 +577,33 @@ const escapeHtml = (value: string) =>
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
 
+/**
+ * A signature placed on a page. Geometry is stored NORMALIZED (0..1) against
+ * the page box, never in screen pixels, so the same signature lands on the
+ * exact same spot on the page whether it is drawn in the small editor
+ * preview, in fullscreen, or baked into the exported image.
+ */
 interface PlacedSignature {
   id: string;
   uri: string;
-  pan: Animated.ValueXY;
-  scale: Animated.Value;
-  rotate: Animated.Value;
-  baseScale: number;
-  baseRotate: number;
+  /** Left edge, 0..1 of page width. */
+  nx: number;
+  /** Top edge, 0..1 of page height. */
+  ny: number;
+  /** Width, 0..1 of page width. */
+  nWidth: number;
+  /** Intrinsic height / width of the signature image. */
+  aspect: number;
+  /** Degrees. */
+  rotation: number;
 }
 
-// Base rendered size (px) of a signature at scale 1. Real min/max visible
-// size is this multiplied by SIGNATURE_MIN_SCALE / SIGNATURE_MAX_SCALE.
-const SIGNATURE_BASE_WIDTH = 140;
-const SIGNATURE_BASE_HEIGHT = 70;
-const SIGNATURE_MIN_SCALE = 0.15;
-const SIGNATURE_MAX_SCALE = 3.5;
+/** Corner area (px) that resizes instead of moving the signature. */
+const SIGNATURE_HANDLE_ZONE = 26;
 
-const clampSignatureScale = (value: number) =>
-  Math.max(SIGNATURE_MIN_SCALE, Math.min(SIGNATURE_MAX_SCALE, value));
+/** Breathing room around the page inside the editor preview. */
+const PREVIEW_INSET_X = 10;
+const PREVIEW_INSET_Y = 6;
 
 const DraggableSignature = ({
   sign,
@@ -583,123 +611,376 @@ const DraggableSignature = ({
   onPress,
   isCapturing,
   docScaleRef,
-  docSizeRef,
+  docWidth,
+  docHeight,
+  onGeometryCommitted,
 }: {
   sign: PlacedSignature;
   isActive: boolean;
   onPress: () => void;
   isCapturing: boolean;
+  /** Live document zoom factor, so drags stay 1:1 with the finger. */
   docScaleRef: { value: number };
-  docSizeRef: { current: { width: number; height: number } };
+  docWidth: number;
+  docHeight: number;
+  /** Fired once a gesture ends, so other mounted previews re-sync. */
+  onGeometryCommitted: (id: string) => void;
 }) => {
-  const currentZoom = () => docScaleRef.value || 1;
+  // The canvas never renders signatures before it has been measured, so the
+  // page size is already known here - seeding the animated values from the
+  // model avoids a first frame at zero size.
+  const initialRect = useRef(
+    signatureRectForPage(sign, { width: docWidth, height: docHeight }),
+  ).current;
+  const position = useRef(
+    new Animated.ValueXY({ x: initialRect.x, y: initialRect.y }),
+  ).current;
+  const boxWidth = useRef(new Animated.Value(initialRect.width)).current;
+  const boxHeight = useRef(new Animated.Value(initialRect.height)).current;
+  /** Live pixel geometry, mirrored from the animated values for gesture math. */
+  const geometry = useRef({ ...initialRect });
+  const gestureStart = useRef({ ...initialRect });
 
-  const clampPan = (x: number, y: number) => {
-    const w = SIGNATURE_BASE_WIDTH * sign.baseScale;
-    const h = SIGNATURE_BASE_HEIGHT * sign.baseScale;
-    const docSize = docSizeRef.current;
-    if (!docSize.width || !docSize.height) return { x, y };
-    const maxX = Math.max(0, docSize.width - w);
-    const maxY = Math.max(0, docSize.height - h);
-    return {
-      x: Math.max(0, Math.min(maxX, x)),
-      y: Math.max(0, Math.min(maxY, y)),
-    };
+  // PanResponders are created once, so everything they read at gesture time
+  // goes through refs that are refreshed on every render - otherwise they
+  // would keep using the very first render's page size / callbacks.
+  const pageRef = useRef({ width: docWidth, height: docHeight });
+  pageRef.current = { width: docWidth, height: docHeight };
+  const onPressRef = useRef(onPress);
+  onPressRef.current = onPress;
+  const signRef = useRef(sign);
+  signRef.current = sign;
+  const onCommittedRef = useRef(onGeometryCommitted);
+  onCommittedRef.current = onGeometryCommitted;
+
+  const applyGeometry = useCallback(
+    (next: { x: number; y: number; width: number; height: number }) => {
+      geometry.current = next;
+      position.setValue({ x: next.x, y: next.y });
+      boxWidth.setValue(next.width);
+      boxHeight.setValue(next.height);
+    },
+    [position, boxWidth, boxHeight],
+  );
+
+  /** Re-derive pixel geometry from the normalized model. */
+  const syncFromModel = useCallback(() => {
+    if (!docWidth || !docHeight) return;
+    applyGeometry(
+      signatureRectForPage(sign, { width: docWidth, height: docHeight }),
+    );
+  }, [sign, docWidth, docHeight, applyGeometry]);
+
+  useEffect(() => {
+    syncFromModel();
+  }, [syncFromModel]);
+
+  /** Write the live pixel geometry back into the normalized model. */
+  const commitGeometry = () => {
+    const page = pageRef.current;
+    if (!page.width || !page.height) return;
+    const current = geometry.current;
+    const target = signRef.current;
+    target.nx = current.x / page.width;
+    target.ny = current.y / page.height;
+    target.nWidth = current.width / page.width;
+    // Gestures mutate the model in place to stay smooth; this tells React the
+    // model moved so the editor preview and the fullscreen view (both mounted
+    // at once) agree on where the signature sits.
+    onCommittedRef.current(target.id);
   };
+  const commitRef = useRef(commitGeometry);
+  commitRef.current = commitGeometry;
+
+  // Move vs. resize is decided from WHERE the touch lands, not by a separate
+  // handle view. A handle with its own touch area would swallow most of a
+  // small signature's body and make it impossible to drag.
+  const gestureMode = useRef<"move" | "resize">("move");
 
   const panResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
-      onPanResponderGrant: () => {
-        onPress();
-        // @ts-ignore
-        sign.pan.setOffset({ x: sign.pan.x._value, y: sign.pan.y._value });
-        sign.pan.setValue({ x: 0, y: 0 });
+      onPanResponderGrant: (evt) => {
+        onPressRef.current();
+        gestureStart.current = { ...geometry.current };
+        const { width, height } = geometry.current;
+        const { locationX, locationY } = evt.nativeEvent;
+        // The corner zone never eats more than a third of the signature, so
+        // even the tiniest signature keeps a draggable body.
+        const zone = Math.min(SIGNATURE_HANDLE_ZONE, width / 3, height / 3);
+        gestureMode.current =
+          locationX >= width - zone && locationY >= height - zone
+            ? "resize"
+            : "move";
       },
       onPanResponderMove: (_evt, gestureState) => {
-        const zoom = currentZoom();
-        sign.pan.setValue({
-          x: gestureState.dx / zoom,
-          y: gestureState.dy / zoom,
-        });
-      },
-      onPanResponderRelease: () => {
-        sign.pan.flattenOffset();
-        // @ts-ignore
-        const { x, y } = clampPan(sign.pan.x._value, sign.pan.y._value);
-        sign.pan.setValue({ x, y });
-      },
-    }),
-  ).current;
+        const page = pageRef.current;
+        const zoom = docScaleRef.value || 1;
 
-  const resizeResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => true,
-      onPanResponderGrant: (evt) => {
-        evt.stopPropagation();
-        onPress();
+        if (gestureMode.current === "resize") {
+          const aspect = signRef.current.aspect || SIGNATURE_FALLBACK_ASPECT;
+          // Average the two axes so the corner follows the finger diagonally
+          // while the signature keeps its own aspect ratio.
+          const delta =
+            (gestureState.dx / zoom + gestureState.dy / zoom / aspect) / 2;
+          const { x, y } = geometry.current;
+          const { width, height } = resolveSignatureResize(
+            gestureStart.current.width,
+            delta,
+            { x, y },
+            aspect,
+            page,
+          );
+          geometry.current = { x, y, width, height };
+          boxWidth.setValue(width);
+          boxHeight.setValue(height);
+          return;
+        }
+
+        const { width, height } = geometry.current;
+        const { x, y } = clampSignaturePosition(
+          gestureStart.current.x + gestureState.dx / zoom,
+          gestureStart.current.y + gestureState.dy / zoom,
+          { width, height },
+          page,
+        );
+        geometry.current = { x, y, width, height };
+        position.setValue({ x, y });
       },
-      onPanResponderMove: (evt, gestureState) => {
-        evt.stopPropagation();
-        const zoom = currentZoom();
-        const delta =
-          (gestureState.dx / zoom + gestureState.dy / zoom) /
-          2 /
-          SIGNATURE_BASE_WIDTH;
-        const nextScale = clampSignatureScale(sign.baseScale + delta);
-        sign.scale.setValue(nextScale);
-      },
-      onPanResponderRelease: (_evt, gestureState) => {
-        const zoom = currentZoom();
-        const delta =
-          (gestureState.dx / zoom + gestureState.dy / zoom) /
-          2 /
-          SIGNATURE_BASE_WIDTH;
-        sign.baseScale = clampSignatureScale(sign.baseScale + delta);
-        sign.scale.setValue(sign.baseScale);
-        // @ts-ignore
-        const { x, y } = clampPan(sign.pan.x._value, sign.pan.y._value);
-        sign.pan.setValue({ x, y });
-      },
+      onPanResponderRelease: () => commitRef.current(),
+      onPanResponderTerminate: () => commitRef.current(),
     }),
   ).current;
 
   return (
     <Animated.View
       {...panResponder.panHandlers}
+      // Extra room on the bottom-right so the resize corner stays grabbable
+      // even when the signature is tiny.
+      hitSlop={{ top: 12, left: 12, bottom: 24, right: 24 }}
       style={[
         styles.signatureWrapper,
         {
+          width: boxWidth,
+          height: boxHeight,
           transform: [
-            { translateX: sign.pan.x },
-            { translateY: sign.pan.y },
-            { scale: sign.scale },
-            {
-              rotate: sign.rotate.interpolate({
-                inputRange: [-36000, 36000],
-                outputRange: ["-36000deg", "36000deg"],
-              }),
-            },
+            { translateX: position.x },
+            { translateY: position.y },
+            { rotate: `${sign.rotation}deg` },
           ],
         },
         isActive && !isCapturing
           ? styles.activeSignature
           : styles.inactiveSignature,
-        isCapturing && { borderWidth: 0, backgroundColor: "transparent" },
       ]}
     >
       <Image source={{ uri: sign.uri }} style={styles.signatureImage} />
       {isActive && !isCapturing && (
-        <View
-          {...resizeResponder.panHandlers}
-          hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
-          style={styles.signatureResizeHandle}
-        >
+        <View style={styles.signatureResizeHandle} pointerEvents="none">
           <View style={styles.signatureResizeHandleDot} />
         </View>
       )}
     </Animated.View>
+  );
+};
+
+const DOC_MIN_ZOOM = 1;
+const DOC_MAX_ZOOM = 5;
+
+/**
+ * Pinch-to-zoom + two-finger pan for a document surface, built on the plain
+ * RN touch responder system (the same one the signature drag uses).
+ *
+ * Only claims the touch once a SECOND finger is down, so single-finger
+ * interactions (tapping, dragging a signature) always reach their target.
+ * Zoom is purely a viewport transform - it never touches the page or the
+ * signature geometry, so exports are unaffected by it.
+ */
+const useDocumentZoom = () => {
+  const scaleAnimated = useRef(new Animated.Value(1)).current;
+  const translateAnimated = useRef(
+    new Animated.ValueXY({ x: 0, y: 0 }),
+  ).current;
+  const scaleRef = useRef({ value: 1 }).current;
+  const translateRef = useRef({ x: 0, y: 0 }).current;
+  const viewportRef = useRef({ width: 0, height: 0 });
+  const prevDistance = useRef(0);
+  const prevMidpoint = useRef<{ x: number; y: number } | null>(null);
+  const [isZoomed, setIsZoomed] = useState(false);
+
+  const reset = useCallback(() => {
+    Animated.parallel([
+      Animated.timing(scaleAnimated, {
+        toValue: 1,
+        duration: 180,
+        useNativeDriver: false,
+      }),
+      Animated.timing(translateAnimated, {
+        toValue: { x: 0, y: 0 },
+        duration: 180,
+        useNativeDriver: false,
+      }),
+    ]).start();
+    scaleRef.value = 1;
+    translateRef.x = 0;
+    translateRef.y = 0;
+    setIsZoomed(false);
+  }, [scaleAnimated, translateAnimated, scaleRef, translateRef]);
+
+  const resetRef = useRef(reset);
+  resetRef.current = reset;
+
+  const clampTranslate = (x: number, y: number, scale: number) =>
+    clampZoomTranslate(x, y, scale, viewportRef.current);
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponderCapture: (evt) =>
+        evt.nativeEvent.touches.length >= 2,
+      onMoveShouldSetPanResponderCapture: (evt) =>
+        evt.nativeEvent.touches.length >= 2,
+      onPanResponderGrant: () => {
+        prevDistance.current = 0;
+        prevMidpoint.current = null;
+      },
+      onPanResponderMove: (evt) => {
+        const touches = evt.nativeEvent.touches;
+        if (touches.length < 2) return;
+        const [first, second] = touches;
+        const dx = first.pageX - second.pageX;
+        const dy = first.pageY - second.pageY;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        const midpoint = {
+          x: (first.pageX + second.pageX) / 2,
+          y: (first.pageY + second.pageY) / 2,
+        };
+
+        if (prevDistance.current === 0) {
+          prevDistance.current = distance;
+          prevMidpoint.current = midpoint;
+          return;
+        }
+
+        const nextScale = Math.max(
+          DOC_MIN_ZOOM,
+          Math.min(
+            DOC_MAX_ZOOM,
+            scaleRef.value * (distance / prevDistance.current),
+          ),
+        );
+        const previous = prevMidpoint.current || midpoint;
+        const clamped = clampTranslate(
+          translateRef.x + (midpoint.x - previous.x),
+          translateRef.y + (midpoint.y - previous.y),
+          nextScale,
+        );
+
+        scaleRef.value = nextScale;
+        translateRef.x = clamped.x;
+        translateRef.y = clamped.y;
+        prevDistance.current = distance;
+        prevMidpoint.current = midpoint;
+
+        scaleAnimated.setValue(nextScale);
+        translateAnimated.setValue(clamped);
+      },
+      onPanResponderRelease: () => {
+        prevDistance.current = 0;
+        prevMidpoint.current = null;
+        if (scaleRef.value <= DOC_MIN_ZOOM + 0.01) {
+          resetRef.current();
+        } else {
+          setIsZoomed(true);
+        }
+      },
+      onPanResponderTerminate: () => {
+        prevDistance.current = 0;
+        prevMidpoint.current = null;
+      },
+    }),
+  ).current;
+
+  // Stable identity so callbacks that depend on the controller are not
+  // rebuilt on every render.
+  return useMemo(
+    () => ({
+      panResponder,
+      animatedStyle: {
+        transform: [
+          { translateX: translateAnimated.x },
+          { translateY: translateAnimated.y },
+          { scale: scaleAnimated },
+        ],
+      },
+      reset,
+      isZoomed,
+      scaleRef,
+      viewportRef,
+    }),
+    [panResponder, translateAnimated, scaleAnimated, reset, isZoomed, scaleRef],
+  );
+};
+
+/**
+ * The page surface that is both shown to the user and captured on export.
+ * Its box matches the page's own aspect ratio exactly, so there are no white
+ * bars around the page and normalized signature coordinates map 1:1 onto it.
+ */
+const DocumentCanvas = ({
+  captureRefObject,
+  uri,
+  width,
+  height,
+  watermark,
+  isCapturing,
+  signatures,
+  activeSignId,
+  onSelectSignature,
+  onSignatureCommitted,
+  docScaleRef,
+}: {
+  captureRefObject: React.RefObject<ViewShot | null>;
+  uri: string;
+  width: number;
+  height: number;
+  watermark: string;
+  isCapturing: boolean;
+  signatures: PlacedSignature[];
+  activeSignId: string | null;
+  onSelectSignature: (id: string) => void;
+  onSignatureCommitted: (id: string) => void;
+  docScaleRef: { value: number };
+}) => {
+  if (!width || !height) return null;
+  return (
+    <ViewShot
+      ref={captureRefObject}
+      style={[styles.documentCanvas, { width, height }]}
+      options={{ format: "jpg", quality: 1.0 }}
+    >
+      <ImageBackground
+        resizeMode="contain"
+        style={styles.documentImage}
+        source={{ uri }}
+      >
+        {watermark.trim().length > 0 && !isCapturing && (
+          <Text style={styles.watermarkPreviewText}>{watermark.trim()}</Text>
+        )}
+        {signatures.map((sign) => (
+          <DraggableSignature
+            key={sign.id}
+            sign={sign}
+            isActive={activeSignId === sign.id}
+            isCapturing={isCapturing}
+            onPress={() => onSelectSignature(sign.id)}
+            docScaleRef={docScaleRef}
+            docWidth={width}
+            docHeight={height}
+            onGeometryCommitted={onSignatureCommitted}
+          />
+        ))}
+      </ImageBackground>
+    </ViewShot>
   );
 };
 
@@ -757,130 +1038,29 @@ export default function App() {
   );
   const [activeSignId, setActiveSignId] = useState<string | null>(null);
   const viewShotRef = useRef<ViewShot>(null);
-  const docSizeRef = useRef({ width: 0, height: 0 });
-  const docScaleAnimated = useRef(new Animated.Value(1)).current;
-  const docTranslateAnimated = useRef(
-    new Animated.ValueXY({ x: 0, y: 0 }),
-  ).current;
-  // Plain mutable mirrors of the animated values above, read synchronously
-  // from PanResponder callbacks (which run on the JS thread already, so no
-  // worklets/shared values are needed for this).
-  const docScaleRef = useRef({ value: 1 }).current;
-  const docTranslateRef = useRef({ x: 0, y: 0 }).current;
-  const pinchPrevDistance = useRef(0);
-  const pinchPrevMidpoint = useRef<{ x: number; y: number } | null>(null);
-  const DOC_MIN_ZOOM = 1;
-  const DOC_MAX_ZOOM = 5;
-  const [isDocZoomed, setIsDocZoomed] = useState(false);
+  const fullscreenViewShotRef = useRef<ViewShot>(null);
+  const [isFullscreenPreview, setIsFullscreenPreview] = useState(false);
+  const [pageImageSize, setPageImageSize] = useState<{
+    width: number;
+    height: number;
+  } | null>(null);
+  const [editorViewport, setEditorViewport] = useState({ width: 0, height: 0 });
+  const [fullscreenViewport, setFullscreenViewport] = useState({
+    width: 0,
+    height: 0,
+  });
 
-  const clampDocTranslate = (
-    x: number,
-    y: number,
-    scale: number,
-  ): { x: number; y: number } => {
-    const docSize = docSizeRef.current;
-    if (!docSize.width || !docSize.height) return { x: 0, y: 0 };
-    const maxOffsetX = (docSize.width * (scale - 1)) / 2;
-    const maxOffsetY = (docSize.height * (scale - 1)) / 2;
-    return {
-      x: Math.max(-maxOffsetX, Math.min(maxOffsetX, x)),
-      y: Math.max(-maxOffsetY, Math.min(maxOffsetY, y)),
-    };
-  };
+  const editorZoom = useDocumentZoom();
+  const fullscreenZoom = useDocumentZoom();
 
-  const resetDocZoom = useCallback(() => {
-    Animated.parallel([
-      Animated.timing(docScaleAnimated, {
-        toValue: 1,
-        duration: 200,
-        useNativeDriver: false,
-      }),
-      Animated.timing(docTranslateAnimated, {
-        toValue: { x: 0, y: 0 },
-        duration: 200,
-        useNativeDriver: false,
-      }),
-    ]).start();
-    docScaleRef.value = 1;
-    docTranslateRef.x = 0;
-    docTranslateRef.y = 0;
-    setIsDocZoomed(false);
-  }, [docScaleAnimated, docTranslateAnimated, docScaleRef, docTranslateRef]);
-
-  const docZoomPanResponder = useRef(
-    PanResponder.create({
-      // Capture phase runs before any descendant (signature drag, tap to
-      // deselect) gets a chance to claim the touch, but only steals it once
-      // a second finger is actually down — a single-finger touch always
-      // falls through to children untouched.
-      onStartShouldSetPanResponderCapture: (evt) =>
-        evt.nativeEvent.touches.length >= 2,
-      onMoveShouldSetPanResponderCapture: (evt) =>
-        evt.nativeEvent.touches.length >= 2,
-      onPanResponderGrant: () => {
-        pinchPrevDistance.current = 0;
-        pinchPrevMidpoint.current = null;
-      },
-      onPanResponderMove: (evt) => {
-        const touches = evt.nativeEvent.touches;
-        if (touches.length < 2) return;
-        const [t1, t2] = touches;
-        const dx = t1.pageX - t2.pageX;
-        const dy = t1.pageY - t2.pageY;
-        const distance = Math.sqrt(dx * dx + dy * dy);
-        const midpoint = {
-          x: (t1.pageX + t2.pageX) / 2,
-          y: (t1.pageY + t2.pageY) / 2,
-        };
-
-        if (pinchPrevDistance.current === 0) {
-          pinchPrevDistance.current = distance;
-          pinchPrevMidpoint.current = midpoint;
-          return;
-        }
-
-        const scaleDelta = distance / pinchPrevDistance.current;
-        const nextScale = Math.max(
-          DOC_MIN_ZOOM,
-          Math.min(DOC_MAX_ZOOM, docScaleRef.value * scaleDelta),
-        );
-        const prevMid = pinchPrevMidpoint.current || midpoint;
-        const rawX = docTranslateRef.x + (midpoint.x - prevMid.x);
-        const rawY = docTranslateRef.y + (midpoint.y - prevMid.y);
-        const clamped = clampDocTranslate(rawX, rawY, nextScale);
-
-        docScaleRef.value = nextScale;
-        docTranslateRef.x = clamped.x;
-        docTranslateRef.y = clamped.y;
-        pinchPrevDistance.current = distance;
-        pinchPrevMidpoint.current = midpoint;
-
-        docScaleAnimated.setValue(nextScale);
-        docTranslateAnimated.setValue(clamped);
-      },
-      onPanResponderRelease: () => {
-        pinchPrevDistance.current = 0;
-        pinchPrevMidpoint.current = null;
-        if (docScaleRef.value <= DOC_MIN_ZOOM + 0.01) {
-          resetDocZoom();
-        } else {
-          setIsDocZoomed(true);
-        }
-      },
-      onPanResponderTerminate: () => {
-        pinchPrevDistance.current = 0;
-        pinchPrevMidpoint.current = null;
-      },
-    }),
-  ).current;
-
-  const docZoomAnimatedStyle = {
-    transform: [
-      { translateX: docTranslateAnimated.x },
-      { translateY: docTranslateAnimated.y },
-      { scale: docScaleAnimated },
-    ],
-  };
+  const pageAspect = pageImageSize
+    ? pageImageSize.width / pageImageSize.height
+    : FALLBACK_PAGE_ASPECT;
+  const editorCanvasSize = fitContain(pageAspect, {
+    width: Math.max(0, editorViewport.width - PREVIEW_INSET_X * 2),
+    height: Math.max(0, editorViewport.height - PREVIEW_INSET_Y * 2),
+  });
+  const fullscreenCanvasSize = fitContain(pageAspect, fullscreenViewport);
 
   const [adsModule, setAdsModule] = useState<GoogleMobileAdsModule | null>(
     null,
@@ -990,8 +1170,34 @@ export default function App() {
   }, [loadBundledScript]);
 
   useEffect(() => {
-    resetDocZoom();
-  }, [currentPage, resetDocZoom]);
+    editorZoom.reset();
+    fullscreenZoom.reset();
+  }, [currentPage, editorZoom.reset, fullscreenZoom.reset]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The page's own pixel size drives the preview aspect ratio and the export
+  // resolution, so the baked page keeps the shape of the original document.
+  useEffect(() => {
+    const uri = scannedImagesList[currentPage];
+    if (!uri) {
+      setPageImageSize(null);
+      return;
+    }
+    let cancelled = false;
+    Image.getSize(
+      uri,
+      (width, height) => {
+        if (!cancelled && width > 0 && height > 0) {
+          setPageImageSize({ width, height });
+        }
+      },
+      () => {
+        if (!cancelled) setPageImageSize(null);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [scannedImagesList, currentPage]);
 
   useEffect(() => {
     if (
@@ -1165,6 +1371,8 @@ export default function App() {
     (defaultName?: string, id: string | null = null) => {
       setPlacedSignatures([]);
       setActiveSignId(null);
+      setIsFullscreenPreview(false);
+      setSignModalVisible(false);
       setUndoStack([]);
       setDocumentName(
         defaultName ||
@@ -1234,44 +1442,75 @@ export default function App() {
     ]);
   };
 
-  const updateActiveSignScale = (change: number) => {
+  /**
+   * A drag/resize mutates the signature model in place for smoothness; this
+   * hands React a fresh object so every mounted preview re-reads it.
+   */
+  const refreshSignatureGeometry = useCallback((id: string) => {
+    setPlacedSignatures((prev) =>
+      prev.map((sign) => (sign.id === id ? { ...sign } : sign)),
+    );
+  }, []);
+
+  /** Applies a change to the selected signature's normalized model. */
+  const patchActiveSignature = (patch: Partial<PlacedSignature>) => {
+    if (!activeSignId) return;
+    setPlacedSignatures((prev) =>
+      prev.map((sign) =>
+        sign.id === activeSignId ? { ...sign, ...patch } : sign,
+      ),
+    );
+  };
+
+  const updateActiveSignScale = (factor: number) => {
     const sign = placedSignatures.find((s) => s.id === activeSignId);
-    if (sign) {
-      sign.baseScale = clampSignatureScale(sign.baseScale + change);
-      Animated.timing(sign.scale, {
-        toValue: sign.baseScale,
-        duration: 150,
-        useNativeDriver: false,
-      }).start();
-    }
+    if (!sign) return;
+    patchActiveSignature({
+      nWidth: clampSignatureWidthRatio(sign.nWidth * factor),
+    });
   };
 
   const updateActiveSignRotate = (change: number) => {
     const sign = placedSignatures.find((s) => s.id === activeSignId);
-    if (sign) {
-      sign.baseRotate = sign.baseRotate + change;
-      Animated.timing(sign.rotate, {
-        toValue: sign.baseRotate,
-        duration: 150,
-        useNativeDriver: false,
-      }).start();
-    }
+    if (!sign) return;
+    patchActiveSignature({ rotation: sign.rotation + change });
   };
 
+  /**
+   * Flattens the placed signatures into the page image. The capture surface
+   * already has the page's aspect ratio, and we ask for the page's own pixel
+   * size, so the result keeps the original shape and resolution instead of
+   * becoming a screen-sized screenshot with white bars.
+   */
   const bakeCurrentPageIfNeeded = useCallback(async () => {
-    if (placedSignatures.length === 0 || !viewShotRef.current) {
+    const targetRef = isFullscreenPreview ? fullscreenViewShotRef : viewShotRef;
+    if (placedSignatures.length === 0 || !targetRef.current) {
       return [...scannedImagesList];
     }
 
     setIsCapturing(true);
     setActiveSignId(null);
-    await pause(100);
+    // Zoom is only a viewport transform, but resetting it first keeps the
+    // capture well away from any in-flight gesture state.
+    editorZoom.reset();
+    fullscreenZoom.reset();
+    await pause(220);
 
     try {
-      const bakedUri = await captureRef(viewShotRef, {
-        format: "jpg",
-        quality: 1.0,
-      });
+      const captureOptions: {
+        format: "jpg";
+        quality: number;
+        width?: number;
+        height?: number;
+      } = { format: "jpg", quality: 1.0 };
+
+      const bakeSize = computeBakeSize(pageImageSize);
+      if (bakeSize) {
+        captureOptions.width = bakeSize.width;
+        captureOptions.height = bakeSize.height;
+      }
+
+      const bakedUri = await captureRef(targetRef, captureOptions);
       const updatedList = [...scannedImagesList];
       updatedList[currentPage] = bakedUri;
       setScannedImagesList(updatedList);
@@ -1280,7 +1519,15 @@ export default function App() {
     } finally {
       setIsCapturing(false);
     }
-  }, [currentPage, placedSignatures.length, scannedImagesList]);
+  }, [
+    currentPage,
+    placedSignatures.length,
+    scannedImagesList,
+    isFullscreenPreview,
+    pageImageSize,
+    editorZoom,
+    fullscreenZoom,
+  ]);
 
   const rememberUndoState = useCallback(
     (
@@ -1797,19 +2044,34 @@ export default function App() {
     }
   };
 
-  const addSignatureToDocument = (uri: string) => {
-    const newSign = {
+  const placeSignature = (uri: string, aspect: number) => {
+    const nWidth = SIGNATURE_DEFAULT_WIDTH_RATIO;
+    const newSign: PlacedSignature = {
       id: Date.now().toString(),
       uri,
-      pan: new Animated.ValueXY(),
-      scale: new Animated.Value(1),
-      rotate: new Animated.Value(0),
-      baseScale: 1,
-      baseRotate: 0,
+      nx: 0.5 - nWidth / 2,
+      // Sits on the lower third of the page, where signatures usually go.
+      ny: 0.64,
+      nWidth,
+      aspect,
+      rotation: 0,
     };
     setPlacedSignatures((prev) => [...prev, newSign]);
     setActiveSignId(newSign.id);
+  };
+
+  const addSignatureToDocument = (uri: string) => {
     setSignModalVisible(false);
+    // Read the real proportions so the signature is never squashed.
+    Image.getSize(
+      uri,
+      (width, height) =>
+        placeSignature(
+          uri,
+          width > 0 ? height / width : SIGNATURE_FALLBACK_ASPECT,
+        ),
+      () => placeSignature(uri, SIGNATURE_FALLBACK_ASPECT),
+    );
   };
 
   const handleSignatureProcessed = async (base64DataUri: string) => {
@@ -2436,6 +2698,254 @@ export default function App() {
     );
   };
 
+  const openFullscreenPreview = () => {
+    if (isCapturing || scannedImagesList.length === 0) return;
+    fullscreenZoom.reset();
+    setIsFullscreenPreview(true);
+  };
+
+  const closeFullscreenPreview = () => {
+    if (isCapturing) return;
+    fullscreenZoom.reset();
+    setActiveSignId(null);
+    setSignModalVisible(false);
+    setIsFullscreenPreview(false);
+  };
+
+  /** Size / rotate / delete controls for the selected signature. */
+  const renderSignatureControls = () => (
+    <>
+      <TouchableOpacity
+        style={styles.controlBtn}
+        onPress={() => updateActiveSignScale(0.85)}
+      >
+        <Ionicons name="remove-circle-outline" size={26} color="#fff" />
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={styles.controlBtn}
+        onPress={() => updateActiveSignScale(1.18)}
+      >
+        <Ionicons name="add-circle-outline" size={26} color="#fff" />
+      </TouchableOpacity>
+      <View style={styles.verticalDivider} />
+      <TouchableOpacity
+        style={styles.controlBtn}
+        onPress={() => updateActiveSignRotate(-10)}
+      >
+        <Ionicons name="arrow-undo-outline" size={24} color="#fff" />
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={styles.controlBtn}
+        onPress={() => updateActiveSignRotate(10)}
+      >
+        <Ionicons name="arrow-redo-outline" size={24} color="#fff" />
+      </TouchableOpacity>
+      <View style={styles.verticalDivider} />
+      <TouchableOpacity
+        style={styles.controlBtn}
+        onPress={removeActiveSignatureFromDocument}
+      >
+        <Ionicons name="trash-outline" size={24} color="#ef4444" />
+      </TouchableOpacity>
+    </>
+  );
+
+  /** Saved-signature picker body, shared by the modal and the fullscreen sheet. */
+  const renderSignaturePickerBody = (onClose: () => void) => (
+    <View style={styles.modalContent}>
+      <View style={styles.modalHeader}>
+        <Text style={styles.modalTitle}>{t("chooseSignature")}</Text>
+        <TouchableOpacity onPress={onClose}>
+          <Ionicons name="close-circle" size={28} color="#475569" />
+        </TouchableOpacity>
+      </View>
+      {savedSignatures.length > 0 ? (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.savedSignsScroll}
+        >
+          {savedSignatures.map((uri, index) => (
+            <View key={index} style={styles.savedSignWrapper}>
+              <TouchableOpacity
+                style={styles.savedSignCard}
+                onPress={() => addSignatureToDocument(uri)}
+              >
+                <Image source={{ uri }} style={styles.savedSignImage} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.deleteSignBtn}
+                onPress={() => deleteSignatureFromStorage(uri)}
+              >
+                <Ionicons name="trash" size={16} color="#fff" />
+              </TouchableOpacity>
+            </View>
+          ))}
+        </ScrollView>
+      ) : (
+        <Text style={styles.emptySignText}>{t("noSignatures")}</Text>
+      )}
+      <TouchableOpacity
+        style={styles.newSignBtn}
+        onPress={() => {
+          setSignModalVisible(false);
+          scanWetSignature();
+        }}
+        disabled={isProcessingSignature}
+      >
+        {isProcessingSignature ? (
+          <ActivityIndicator color="#fff" />
+        ) : (
+          <>
+            <Ionicons name="add-circle-outline" size={24} color="#fff" />
+            <Text style={styles.newSignBtnText}>
+              {t("scanNewWetSignature")}
+            </Text>
+          </>
+        )}
+      </TouchableOpacity>
+    </View>
+  );
+
+  /**
+   * Distraction-free full screen page view: the page fills the screen, pinch
+   * zooms, and signatures can be dropped and nudged into place precisely.
+   */
+  const renderFullscreenPreview = () => (
+    <Modal
+      visible={isFullscreenPreview}
+      animationType="fade"
+      statusBarTranslucent
+      onRequestClose={closeFullscreenPreview}
+    >
+      <View style={styles.fullscreenRoot}>
+        <StatusBar barStyle="light-content" backgroundColor="#000" />
+        <View style={styles.fullscreenTopBar}>
+          <TouchableOpacity
+            style={styles.fullscreenIconButton}
+            onPress={closeFullscreenPreview}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <Ionicons name="close" size={26} color="#fff" />
+          </TouchableOpacity>
+          <Text style={styles.fullscreenPageLabel}>
+            {currentPage + 1} / {scannedImagesList.length}
+          </Text>
+          <TouchableOpacity
+            style={styles.fullscreenDoneButton}
+            onPress={closeFullscreenPreview}
+            disabled={isCapturing}
+          >
+            <Text style={styles.fullscreenDoneText}>{t("done")}</Text>
+          </TouchableOpacity>
+        </View>
+
+        <View
+          style={styles.fullscreenCanvasArea}
+          onLayout={(e) => {
+            const { width, height } = e.nativeEvent.layout;
+            fullscreenZoom.viewportRef.current = { width, height };
+            setFullscreenViewport({ width, height });
+          }}
+        >
+          <Animated.View
+            {...fullscreenZoom.panResponder.panHandlers}
+            style={[styles.previewZoomLayer, fullscreenZoom.animatedStyle]}
+          >
+            <TouchableWithoutFeedback onPress={() => setActiveSignId(null)}>
+              <View style={styles.previewZoomLayer}>
+                <DocumentCanvas
+                  captureRefObject={fullscreenViewShotRef}
+                  uri={scannedImagesList[currentPage]}
+                  width={fullscreenCanvasSize.width}
+                  height={fullscreenCanvasSize.height}
+                  watermark={documentWatermark}
+                  isCapturing={isCapturing}
+                  signatures={placedSignatures}
+                  activeSignId={activeSignId}
+                  onSelectSignature={setActiveSignId}
+                  onSignatureCommitted={refreshSignatureGeometry}
+                  docScaleRef={fullscreenZoom.scaleRef}
+                />
+              </View>
+            </TouchableWithoutFeedback>
+          </Animated.View>
+          {fullscreenZoom.isZoomed && !isCapturing && (
+            <TouchableOpacity
+              style={styles.fullscreenFitButton}
+              onPress={fullscreenZoom.reset}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="contract-outline" size={16} color="#fff" />
+              <Text style={styles.fullscreenFitText}>{t("fitToScreen")}</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {activeSignId && !isCapturing && (
+          <View style={styles.fullscreenSignControls}>
+            {renderSignatureControls()}
+          </View>
+        )}
+
+        <View style={styles.fullscreenBottomBar}>
+          <TouchableOpacity
+            style={styles.fullscreenNavButton}
+            onPress={() => changePage(currentPage - 1)}
+            disabled={currentPage === 0 || isCapturing}
+          >
+            <Ionicons
+              name="chevron-back"
+              size={26}
+              color={currentPage === 0 ? "#475569" : "#e2e8f0"}
+            />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.fullscreenSignButton}
+            onPress={() => setSignModalVisible(true)}
+            disabled={isCapturing}
+          >
+            <MaterialCommunityIcons name="draw-pen" size={22} color="#fff" />
+            <Text style={styles.fullscreenSignButtonText}>
+              {t("addSignature")}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.fullscreenNavButton}
+            onPress={() => changePage(currentPage + 1)}
+            disabled={
+              currentPage === scannedImagesList.length - 1 || isCapturing
+            }
+          >
+            <Ionicons
+              name="chevron-forward"
+              size={26}
+              color={
+                currentPage === scannedImagesList.length - 1
+                  ? "#475569"
+                  : "#e2e8f0"
+              }
+            />
+          </TouchableOpacity>
+        </View>
+
+        {/* Rendered inline rather than as a nested Modal, which stacks badly
+            on Android. */}
+        {isSignModalVisible && (
+          <View style={styles.fullscreenPickerOverlay}>
+            {renderSignaturePickerBody(() => setSignModalVisible(false))}
+          </View>
+        )}
+
+        {isCapturing && (
+          <View style={styles.fullscreenBusyOverlay} pointerEvents="none">
+            <ActivityIndicator size="large" color="#6366f1" />
+          </View>
+        )}
+      </View>
+    </Modal>
+  );
+
   const renderEditor = () => (
     <View style={styles.editorContainer}>
       <View style={styles.editorHeader}>
@@ -2499,10 +3009,10 @@ export default function App() {
             color="#fff"
           />
         </TouchableOpacity>
-        {isDocZoomed && (
+        {editorZoom.isZoomed && (
           <TouchableOpacity
             style={[styles.editorToggleChip, styles.editorToggleChipActive]}
-            onPress={resetDocZoom}
+            onPress={editorZoom.reset}
             activeOpacity={0.7}
           >
             <Ionicons name="contract-outline" size={16} color="#fff" />
@@ -2725,174 +3235,85 @@ export default function App() {
         </ScrollView>
       )}
       <View style={styles.resultContainer}>
-        <Animated.View
-          {...docZoomPanResponder.panHandlers}
-          style={[
-            {
-              flex: 1,
-              width: "100%",
-              alignItems: "center",
-              justifyContent: "flex-start",
-            },
-            docZoomAnimatedStyle,
-          ]}
+        <View
+          style={styles.previewViewport}
+          onLayout={(e) => {
+            const { width, height } = e.nativeEvent.layout;
+            editorZoom.viewportRef.current = { width, height };
+            setEditorViewport({ width, height });
+          }}
         >
-          <TouchableWithoutFeedback onPress={() => setActiveSignId(null)}>
-            <View
-              style={{
-                flex: 1,
-                width: "100%",
-                alignItems: "center",
-                justifyContent: "flex-start",
-              }}
+          <Animated.View
+            {...editorZoom.panResponder.panHandlers}
+            style={[styles.previewZoomLayer, editorZoom.animatedStyle]}
+          >
+            <TouchableWithoutFeedback onPress={() => setActiveSignId(null)}>
+              <View style={styles.previewZoomLayer}>
+                <DocumentCanvas
+                  captureRefObject={viewShotRef}
+                  uri={scannedImagesList[currentPage]}
+                  width={editorCanvasSize.width}
+                  height={editorCanvasSize.height}
+                  watermark={documentWatermark}
+                  isCapturing={isCapturing}
+                  signatures={placedSignatures}
+                  activeSignId={activeSignId}
+                  onSelectSignature={setActiveSignId}
+                  onSignatureCommitted={refreshSignatureGeometry}
+                  docScaleRef={editorZoom.scaleRef}
+                />
+              </View>
+            </TouchableWithoutFeedback>
+          </Animated.View>
+          {!isCapturing && (
+            <TouchableOpacity
+              style={styles.previewExpandButton}
+              onPress={openFullscreenPreview}
+              activeOpacity={0.8}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
             >
-              <ViewShot
-                ref={viewShotRef}
-                style={styles.viewShotContainer}
-                options={{ format: "jpg", quality: 1.0 }}
-              >
-                <ImageBackground
-                  resizeMode="contain"
-                  style={styles.documentImage}
-                  source={{ uri: scannedImagesList[currentPage] }}
-                  onLayout={(e) => {
-                    const { width, height } = e.nativeEvent.layout;
-                    docSizeRef.current = { width, height };
-                  }}
-                >
-                  {documentWatermark.trim().length > 0 && !isCapturing && (
-                    <Text style={styles.watermarkPreviewText}>
-                      {documentWatermark.trim()}
-                    </Text>
-                  )}
-                  {placedSignatures.map((sign) => (
-                    <DraggableSignature
-                      key={sign.id}
-                      sign={sign}
-                      isActive={activeSignId === sign.id}
-                      isCapturing={isCapturing}
-                      onPress={() => setActiveSignId(sign.id)}
-                      docScaleRef={docScaleRef}
-                      docSizeRef={docSizeRef}
-                    />
-                  ))}
-                </ImageBackground>
-              </ViewShot>
-            </View>
-          </TouchableWithoutFeedback>
-        </Animated.View>
+              <Ionicons name="expand-outline" size={18} color="#fff" />
+            </TouchableOpacity>
+          )}
+        </View>
         {activeSignId && !isCapturing && (
           <View style={styles.signatureControlsPanel}>
-            <TouchableOpacity
-              style={styles.controlBtn}
-              onPress={() => updateActiveSignScale(-0.1)}
-            >
-              <Ionicons name="remove-circle-outline" size={28} color="#fff" />
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.controlBtn}
-              onPress={() => updateActiveSignScale(0.1)}
-            >
-              <Ionicons name="add-circle-outline" size={28} color="#fff" />
-            </TouchableOpacity>
-            <View style={styles.verticalDivider} />
-            <TouchableOpacity
-              style={styles.controlBtn}
-              onPress={() => updateActiveSignRotate(-10)}
-            >
-              <Ionicons name="arrow-undo-outline" size={26} color="#fff" />
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.controlBtn}
-              onPress={() => updateActiveSignRotate(10)}
-            >
-              <Ionicons name="arrow-redo-outline" size={26} color="#fff" />
-            </TouchableOpacity>
-            <View style={styles.verticalDivider} />
-            <TouchableOpacity
-              style={styles.controlBtn}
-              onPress={removeActiveSignatureFromDocument}
-            >
-              <Ionicons name="trash-outline" size={26} color="#ef4444" />
-            </TouchableOpacity>
+            {renderSignatureControls()}
           </View>
         )}
         <View style={styles.editorToolbar}>
           <TouchableOpacity
+            style={styles.toolbarBtnGhost}
+            onPress={openFullscreenPreview}
+          >
+            <Ionicons name="scan-outline" size={22} color="#c7d2fe" />
+            <Text style={styles.toolbarTextGhost}>{t("fullscreen")}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
             style={styles.toolbarBtnMain}
             onPress={() => setSignModalVisible(true)}
           >
-            <MaterialCommunityIcons name="draw-pen" size={24} color="#fff" />
+            <MaterialCommunityIcons name="draw-pen" size={22} color="#fff" />
             <Text style={styles.toolbarTextMain}>{t("addSignature")}</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.toolbarBtnShare}
             onPress={shareDocument}
           >
-            <Ionicons name="share-social" size={24} color="#fff" />
+            <Ionicons name="share-social" size={22} color="#fff" />
             <Text style={styles.toolbarTextShare}>{t("share")}</Text>
           </TouchableOpacity>
         </View>
       </View>
+      {renderFullscreenPreview()}
       <Modal
-        visible={isSignModalVisible}
+        visible={isSignModalVisible && !isFullscreenPreview}
         transparent={true}
         animationType="slide"
+        onRequestClose={() => setSignModalVisible(false)}
       >
         <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>{t("chooseSignature")}</Text>
-              <TouchableOpacity onPress={() => setSignModalVisible(false)}>
-                <Ionicons name="close-circle" size={28} color="#475569" />
-              </TouchableOpacity>
-            </View>
-            {savedSignatures.length > 0 ? (
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                style={styles.savedSignsScroll}
-              >
-                {savedSignatures.map((uri, index) => (
-                  <View key={index} style={styles.savedSignWrapper}>
-                    <TouchableOpacity
-                      style={styles.savedSignCard}
-                      onPress={() => addSignatureToDocument(uri)}
-                    >
-                      <Image source={{ uri }} style={styles.savedSignImage} />
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.deleteSignBtn}
-                      onPress={() => deleteSignatureFromStorage(uri)}
-                    >
-                      <Ionicons name="trash" size={16} color="#fff" />
-                    </TouchableOpacity>
-                  </View>
-                ))}
-              </ScrollView>
-            ) : (
-              <Text style={styles.emptySignText}>{t("noSignatures")}</Text>
-            )}
-            <TouchableOpacity
-              style={styles.newSignBtn}
-              onPress={() => {
-                setSignModalVisible(false);
-                scanWetSignature();
-              }}
-              disabled={isProcessingSignature}
-            >
-              {isProcessingSignature ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <>
-                  <Ionicons name="add-circle-outline" size={24} color="#fff" />
-                  <Text style={styles.newSignBtnText}>
-                    {t("scanNewWetSignature")}
-                  </Text>
-                </>
-              )}
-            </TouchableOpacity>
-          </View>
+          {renderSignaturePickerBody(() => setSignModalVisible(false))}
         </View>
       </Modal>
       <Modal
@@ -3833,7 +4254,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 15,
-    paddingTop: 20,
+    // RN's SafeAreaView does not inset the status bar on Android, so the
+    // header (and its Done button) would sit underneath it.
+    paddingTop:
+      Platform.OS === "android" ? (StatusBar.currentHeight ?? 24) + 10 : 20,
     paddingBottom: 10,
   },
   backButton: { padding: 5 },
@@ -4086,18 +4510,42 @@ const styles = StyleSheet.create({
     paddingTop: 6,
     paddingBottom: 90,
   },
-  viewShotContainer: {
-    width: "97%",
-    height: "92%",
-    backgroundColor: "#fff",
-    borderRadius: 12,
-    overflow: "hidden",
-    justifyContent: "center",
+  previewViewport: {
+    flex: 1,
+    width: "100%",
+    paddingHorizontal: PREVIEW_INSET_X,
+    paddingVertical: PREVIEW_INSET_Y,
+  },
+  previewZoomLayer: {
+    flex: 1,
+    width: "100%",
     alignItems: "center",
+    justifyContent: "center",
+  },
+  previewExpandButton: {
+    position: "absolute",
+    top: 16,
+    right: 20,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "rgba(15, 23, 42, 0.75)",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 5,
+  },
+  // The capture surface. Sized in JS to the page's own aspect ratio, so the
+  // exported image keeps the document's shape with no white bars.
+  documentCanvas: {
+    backgroundColor: "#fff",
+    // The resize handle hangs slightly outside the page box; it is hidden at
+    // capture time, so letting it overflow costs nothing and keeps it
+    // grabbable for signatures sitting on the page edge.
+    overflow: "visible",
     shadowColor: "#000",
-    shadowOpacity: 0.2,
-    shadowRadius: 10,
-    elevation: 5,
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
+    elevation: 6,
   },
   documentImage: { width: "100%", height: "100%" },
   watermarkPreviewText: {
@@ -4112,16 +4560,16 @@ const styles = StyleSheet.create({
     transform: [{ rotate: "-24deg" }],
     letterSpacing: 2,
   },
-  signatureWrapper: { position: "absolute", padding: 2 },
+  signatureWrapper: { position: "absolute", left: 0, top: 0 },
   activeSignature: {
-    borderWidth: 2,
+    borderWidth: 1.5,
     borderColor: "#6366f1",
     borderStyle: "dashed",
-    borderRadius: 8,
-    backgroundColor: "rgba(99, 102, 241, 0.1)",
+    borderRadius: 4,
+    backgroundColor: "rgba(99, 102, 241, 0.08)",
   },
   inactiveSignature: { borderWidth: 0, backgroundColor: "transparent" },
-  signatureImage: { width: 140, height: 70, resizeMode: "contain" },
+  signatureImage: { width: "100%", height: "100%", resizeMode: "contain" },
   signatureResizeHandle: {
     position: "absolute",
     right: -14,
@@ -4188,9 +4636,136 @@ const styles = StyleSheet.create({
   },
   toolbarTextMain: {
     color: "#fff",
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "bold",
     marginLeft: 8,
+  },
+  toolbarBtnGhost: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 25,
+    borderWidth: 1,
+    borderColor: "#4338ca",
+    backgroundColor: "rgba(67, 56, 202, 0.18)",
+  },
+  toolbarTextGhost: {
+    color: "#c7d2fe",
+    fontSize: 13,
+    fontWeight: "700",
+    marginLeft: 6,
+  },
+  fullscreenRoot: {
+    flex: 1,
+    backgroundColor: "#000",
+  },
+  fullscreenTopBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === "android" ? 38 : 54,
+    paddingBottom: 12,
+    backgroundColor: "#0b1220",
+  },
+  fullscreenIconButton: {
+    width: 40,
+    height: 40,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  fullscreenPageLabel: {
+    color: "#e2e8f0",
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  fullscreenDoneButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 18,
+    backgroundColor: "#10b981",
+  },
+  fullscreenDoneText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  fullscreenCanvasArea: {
+    flex: 1,
+    overflow: "hidden",
+  },
+  fullscreenFitButton: {
+    position: "absolute",
+    top: 14,
+    right: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 18,
+    backgroundColor: "rgba(30, 41, 59, 0.92)",
+    zIndex: 5,
+  },
+  fullscreenFitText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  fullscreenSignControls: {
+    position: "absolute",
+    bottom: 104,
+    alignSelf: "center",
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(30, 41, 59, 0.96)",
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 30,
+    elevation: 6,
+  },
+  fullscreenBottomBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 22,
+    paddingTop: 12,
+    paddingBottom: Platform.OS === "android" ? 18 : 30,
+    backgroundColor: "#0b1220",
+  },
+  fullscreenNavButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#1e293b",
+  },
+  fullscreenSignButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 26,
+    paddingVertical: 13,
+    borderRadius: 26,
+    backgroundColor: "#6366f1",
+  },
+  fullscreenSignButtonText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  fullscreenPickerOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.65)",
+    justifyContent: "flex-end",
+  },
+  fullscreenBusyOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.35)",
   },
   toolbarBtnShare: {
     backgroundColor: "#10b981",
